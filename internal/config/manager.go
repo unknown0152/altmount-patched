@@ -1262,8 +1262,8 @@ func DefaultConfig(configDir ...string) *Config {
 	deleteSourceNzbOnRemoval := false // Delete source NZB on removal disabled by default
 	vfsEnabled := false
 	mountEnabled := false // Disabled by default
-	sabnzbdEnabled := false
-	scrapperEnabled := false
+	sabnzbdEnabled := true
+	scrapperEnabled := true
 	fuseEnabled := false
 	loginRequired := true      // Require login by default
 	stremioEnabled := false    // Stremio endpoint disabled by default
@@ -1441,29 +1441,36 @@ func DefaultConfig(configDir ...string) *Config {
 			DownloadClientBaseURL: "",
 			Categories: []SABnzbdCategory{
 				{
-					Name:     "Movies",
+					Name:     "movies",
 					Order:    1,
 					Priority: 0,
+					Dir:      "movies",
+					Type:     "radarr",
 				},
 				{
-					Name:     "TV",
-					Order:    1,
-					Priority: 1,
+					Name:     "tv",
+					Order:    2,
+					Priority: 0,
+					Dir:      "tv",
+					Type:     "sonarr",
 				},
 				{
-					Name:     "Music",
-					Order:    1,
-					Priority: 2,
+					Name:     "music",
+					Order:    3,
+					Priority: 0,
+					Dir:      "music",
 				},
 				{
-					Name:     "Books",
-					Order:    1,
-					Priority: 3,
+					Name:     "books",
+					Order:    4,
+					Priority: 0,
+					Dir:      "books",
 				},
 				{
-					Name:     "Adult",
-					Order:    1,
-					Priority: 4,
+					Name:     "adult",
+					Order:    5,
+					Priority: 0,
+					Dir:      "adult",
 				},
 			},
 			FallbackHost:            "",

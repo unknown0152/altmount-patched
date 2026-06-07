@@ -225,6 +225,23 @@ func TestConfig_GetDownloadClientBaseURL(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_DanishEditionSABnzbdReady(t *testing.T) {
+	cfg := DefaultConfig()
+
+	assert.NotNil(t, cfg.SABnzbd.Enabled)
+	assert.True(t, *cfg.SABnzbd.Enabled)
+	assert.NotNil(t, cfg.Arrs.Enabled)
+	assert.True(t, *cfg.Arrs.Enabled)
+
+	assert.Len(t, cfg.SABnzbd.Categories, 5)
+	assert.Equal(t, "movies", cfg.SABnzbd.Categories[0].Name)
+	assert.Equal(t, "movies", cfg.SABnzbd.Categories[0].Dir)
+	assert.Equal(t, "radarr", cfg.SABnzbd.Categories[0].Type)
+	assert.Equal(t, "tv", cfg.SABnzbd.Categories[1].Name)
+	assert.Equal(t, "tv", cfg.SABnzbd.Categories[1].Dir)
+	assert.Equal(t, "sonarr", cfg.SABnzbd.Categories[1].Type)
+}
+
 func TestConfig_NetworkRoundTrip(t *testing.T) {
 	in := Config{
 		Network: NetworkConfig{
@@ -252,4 +269,3 @@ func TestConfig_NetworkDefaultsEmpty(t *testing.T) {
 	assert.Empty(t, cfg.Network.HTTPSProxy)
 	assert.Empty(t, cfg.Network.NoProxy)
 }
-

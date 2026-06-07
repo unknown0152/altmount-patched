@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"mime"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -1323,7 +1323,7 @@ func (s *Server) buildCategoryPath(category string) string {
 
 	// Look for the category in configuration
 	for _, configCategory := range cfg.SABnzbd.Categories {
-		if configCategory.Name == category {
+		if strings.EqualFold(configCategory.Name, category) {
 			// Use configured Dir if available, otherwise use category name
 			if configCategory.Dir != "" {
 				return configCategory.Dir
@@ -1364,8 +1364,8 @@ func (s *Server) validateSABnzbdCategory(category string) (string, error) {
 
 	// Check if category exists in configuration
 	for _, configCategory := range config.SABnzbd.Categories {
-		if configCategory.Name == category {
-			return category, nil
+		if strings.EqualFold(configCategory.Name, category) {
+			return configCategory.Name, nil
 		}
 	}
 
