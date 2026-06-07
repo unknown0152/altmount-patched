@@ -1,0 +1,132 @@
+# CI-optimized Dockerfile for AltMount
+# This Dockerfile expects the frontend to be pre-built and provided as context
+# syntax=docker/dockerfile:1.11
+
+# Custom base stage with pre-installed packages
+FROM lscr.io/linuxserver/baseimage-ubuntu:jammy AS custom-base
+
+ARG DEBIAN_FRONTEND="noninteractive"
+
+# Install mime-support and clean up in single layer
+RUN apt-get update && \
+    apt-get install --reinstall mime-support -y && \
+    rm -rf /var/lib/apt/lists/*
+
+# Backend build stage with Debian for reliable ARM64 QEMU support
+FROM golang:1.26-bookworm AS backend-builder
+
+# Install build dependencies including sqlite with cache mount
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        git \
+        gcc \
+        g++ \
+        libc6-dev \
+        libsqlite3-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy go module files first for better caching
+COPY go.mod go.sum ./
+
+# Download dependencies with enhanced cache mount
+RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
+    --mount=type=cache,target=/root/.cache/go-mod-download,sharing=locked \
+    go mod download
+
+# Copy source code in optimal order for caching
+COPY ./pkg ./pkg
+COPY ./internal ./internal
+COPY ./cmd ./cmd
+COPY ./frontend/embed_cli.go ./frontend/embed_cli.go
+COPY ./frontend/embed_docker.go ./frontend/embed_docker.go
+
+# Copy pre-built frontend from CI (expected to be in frontend/dist)
+COPY ./frontend/dist ./frontend/dist
+
+# Build web binary with enhanced cache mount for native architecture
+RUN --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
+    --mount=type=cache,target=/tmp/go-build-cache,sharing=locked \
+    CGO_ENABLED=1 GOOS=linux \
+    go build -a -ldflags '-linkmode external -extldflags "-static"' -o altmount cmd/altmount/main.go
+
+# Final stage - use custom base image with pre-installed packages
+ARG TARGETARCH
+FROM custom-base
+
+ARG DEBIAN_FRONTEND="noninteractive"
+ARG BUILD_DATE
+ARG VERSION
+ARG PUID=1000
+ARG PGID=1000
+
+# Set up environment variables for PUID and PGID
+ENV PUID=${PUID}
+ENV PGID=${PGID}
+
+# Set the working directory inside the container
+WORKDIR /app
+
+# Copy web binary from builder
+COPY --from=backend-builder /app/altmount /app/altmount
+COPY --from=backend-builder /app/frontend/dist ./frontend/dist
+
+# Install required packages for runtime (mime-support already in custom-base)
+# docker.io provides docker CLI for the auto-update feature (requires /var/run/docker.sock mount)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        wget \
+        ca-certificates \
+        docker.io && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install rclone and FUSE support for internal mount functionality
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        fuse3 \
+        curl \
+        unzip && \
+    echo "user_allow_other" >> /etc/fuse.conf && \
+    case "$(uname -m)" in \
+        x86_64) ARCH=amd64 ;; \
+        aarch64) ARCH=arm64 ;; \
+        armv7l) ARCH=arm ;; \
+        *) echo "Unsupported architecture: $(uname -m)" && exit 1 ;; \
+    esac && \
+    curl -O "https://downloads.rclone.org/rclone-current-linux-${ARCH}.zip" && \
+    unzip "rclone-current-linux-${ARCH}.zip" && \
+    cp rclone-*/rclone /usr/local/bin/ && \
+    chmod +x /usr/local/bin/rclone && \
+    rm -rf rclone-* && \
+    apt-get remove -y curl unzip && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
+
+# Make binary executable
+RUN chmod +x /app/altmount
+
+# Copy s6-overlay service configuration
+COPY docker/root/ /
+
+# Set environment variables
+ENV PORT=8080
+ENV HOST=0.0.0.0
+
+# Expose port for web interface
+EXPOSE 8080
+
+# Volume
+VOLUME ["/config", "/metadata"]
+
+# Health check
+HEALTHCHECK --interval=5s --timeout=10s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/live || exit 1
+
+# Labels
+LABEL org.opencontainers.image.source="https://github.com/javi11/altmount"
+LABEL build_version="version: Build-date:- ${VERSION}  ${BUILD_DATE}"
+LABEL maintainer="javi11"

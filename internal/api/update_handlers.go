@@ -1,0 +1,271 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/javi11/altmount/internal/auth"
+	"github.com/javi11/altmount/internal/version"
+)
+
+// insideContainer reports whether the current process is running inside a
+// Docker or Kubernetes container. When true, the Docker-based update path is
+// preferred over the binary self-update path.
+func insideContainer() bool {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	if os.Getenv("KUBERNETES_SERVICE_HOST") != "" {
+		return true
+	}
+	return false
+}
+
+const (
+	ghAPIBase   = "https://api.github.com"
+	ghRepoOwner = "javi11"
+	ghRepoName  = "altmount"
+)
+
+// isDockerAvailable checks if the docker.sock and docker binary are present.
+func isDockerAvailable() bool {
+	// Check if docker.sock is mounted
+	if _, err := os.Stat("/var/run/docker.sock"); err != nil {
+		return false
+	}
+	// Check if docker CLI is available in PATH
+	if _, err := exec.LookPath("docker"); err != nil {
+		return false
+	}
+	return true
+}
+
+type githubReleaseResponse struct {
+	TagName string `json:"tag_name"`
+	HTMLURL string `json:"html_url"`
+}
+
+type githubCommitResponse struct {
+	SHA string `json:"sha"`
+}
+
+// fetchLatestGitHubRelease retrieves the latest release tag and URL from GitHub.
+func fetchLatestGitHubRelease(ctx context.Context) (tag string, releaseURL string, err error) {
+	url := fmt.Sprintf("%s/repos/%s/%s/releases/latest", ghAPIBase, ghRepoOwner, ghRepoName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("GitHub releases API returned status %d", resp.StatusCode)
+	}
+
+	var release githubReleaseResponse
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return "", "", err
+	}
+	return release.TagName, release.HTMLURL, nil
+}
+
+// fetchLatestGitHubCommit retrieves the latest commit SHA on the main branch.
+func fetchLatestGitHubCommit(ctx context.Context) (string, error) {
+	url := fmt.Sprintf("%s/repos/%s/%s/commits/main", ghAPIBase, ghRepoOwner, ghRepoName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GitHub commits API returned status %d", resp.StatusCode)
+	}
+
+	var commit githubCommitResponse
+	if err := json.NewDecoder(resp.Body).Decode(&commit); err != nil {
+		return "", err
+	}
+	return commit.SHA, nil
+}
+
+// handleGetUpdateStatus handles GET /api/system/update/status
+//
+//	@Summary		Get update status
+//	@Description	Checks Docker Hub for the latest available version and returns whether an update is available.
+//	@Tags			System
+//	@Produce		json
+//	@Param			channel	query		string	false	"Release channel"	Enums(latest,dev)
+//	@Success		200		{object}	APIResponse{data=UpdateStatusResponse}
+//	@Failure		400		{object}	APIResponse
+//	@Security		BearerAuth
+//	@Router			/system/update/status [get]
+func (s *Server) handleGetUpdateStatus(c *fiber.Ctx) error {
+	channel := UpdateChannel(c.Query("channel", string(UpdateChannelLatest)))
+	if channel != UpdateChannelLatest && channel != UpdateChannelDev {
+		return RespondBadRequest(c, "Invalid channel. Use 'latest' or 'dev'", "")
+	}
+
+	resp := UpdateStatusResponse{
+		CurrentVersion:        version.Version,
+		GitCommit:             version.GitCommit,
+		Channel:               channel,
+		DockerAvailable:       isDockerAvailable(),
+		BinaryUpdateAvailable: s.updater != nil && s.updater.CanSelfUpdate(),
+	}
+
+	ctx, cancel := context.WithTimeout(c.Context(), 10*time.Second)
+	defer cancel()
+
+	switch channel {
+	case UpdateChannelLatest:
+		tag, releaseURL, err := fetchLatestGitHubRelease(ctx)
+		if err != nil {
+			slog.WarnContext(c.Context(), "Failed to fetch latest GitHub release", "error", err)
+			return RespondSuccess(c, resp)
+		}
+		resp.LatestVersion = tag
+		resp.ReleaseURL = releaseURL
+		current := strings.TrimPrefix(version.Version, "v")
+		latest := strings.TrimPrefix(tag, "v")
+		resp.UpdateAvailable = current != latest
+
+	case UpdateChannelDev:
+		sha, err := fetchLatestGitHubCommit(ctx)
+		if err != nil {
+			slog.WarnContext(c.Context(), "Failed to fetch latest GitHub commit", "error", err)
+			return RespondSuccess(c, resp)
+		}
+		shortSHA := sha[:min(len(sha), 7)]
+		resp.LatestVersion = shortSHA
+		resp.ReleaseURL = fmt.Sprintf("https://github.com/%s/%s/commits/main", ghRepoOwner, ghRepoName)
+		currentSHA := strings.TrimPrefix(version.GitCommit, "v")
+		resp.UpdateAvailable = currentSHA != "unknown" &&
+			!strings.HasPrefix(sha, currentSHA) &&
+			!strings.HasPrefix(currentSHA, shortSHA)
+	}
+
+	return RespondSuccess(c, resp)
+}
+
+// handleApplyUpdate handles POST /api/system/update/apply
+//
+//	@Summary		Apply update
+//	@Description	Pulls the latest Docker image and restarts the container to apply the update.
+//	@Tags			System
+//	@Accept			json
+//	@Produce		json
+//	@Param			body	body		object{channel=string}	false	"Update channel (latest or dev)"
+//	@Success		200		{object}	APIResponse
+//	@Failure		400		{object}	APIResponse
+//	@Failure		503		{object}	APIResponse
+//	@Security		BearerAuth
+//	@Router			/system/update/apply [post]
+func (s *Server) handleApplyUpdate(c *fiber.Ctx) error {
+	user := auth.GetUserFromContext(c)
+	if !s.isAdminOrLoginDisabled(user) {
+		return RespondForbidden(c, "Admin privileges required", "Only administrators can perform system updates.")
+	}
+
+	var req struct {
+		Channel UpdateChannel `json:"channel"`
+		Force   bool          `json:"force"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return RespondBadRequest(c, "Invalid request body", err.Error())
+	}
+
+	channel := req.Channel
+	if channel == "" {
+		channel = UpdateChannelLatest
+	}
+
+	if channel != UpdateChannelLatest && channel != UpdateChannelDev {
+		return RespondBadRequest(c, "Invalid channel. Use 'latest' or 'dev'", "")
+	}
+
+	// Prefer the Docker-based update path when running inside a container
+	// with docker.sock mounted. Fall back to in-place binary self-update for
+	// standalone installs.
+	dockerPath := insideContainer() && isDockerAvailable()
+	binaryPath := !dockerPath && s.updater != nil && s.updater.CanSelfUpdate()
+
+	switch {
+	case dockerPath:
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
+
+			image := fmt.Sprintf("ghcr.io/%s/%s:%s", ghRepoOwner, ghRepoName, channel)
+			slog.InfoContext(ctx, "Starting docker auto-update",
+				"channel", channel,
+				"image", image,
+				"force", req.Force)
+
+			cmd := exec.CommandContext(ctx, "docker", "pull", image)
+			cmd.Env = append(os.Environ(), "HOME=/config")
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				slog.ErrorContext(ctx, "Failed to pull latest image",
+					"error", err,
+					"output", string(output))
+				return
+			}
+			slog.InfoContext(ctx, "Successfully pulled latest image",
+				"output", string(output))
+
+			s.performRestart(ctx)
+		}()
+
+		return RespondSuccess(c, fiber.Map{
+			"message": "Update initiated. The image is being pulled and the server will restart automatically.",
+		})
+
+	case binaryPath:
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer cancel()
+
+			slog.InfoContext(ctx, "Starting binary auto-update",
+				"channel", channel,
+				"force", req.Force)
+
+			if err := s.updater.ApplyBinaryUpdate(ctx, string(channel)); err != nil {
+				slog.ErrorContext(ctx, "Failed to apply binary update", "error", err)
+				return
+			}
+			slog.InfoContext(ctx, "Binary update applied, restarting")
+			s.performRestart(ctx)
+		}()
+
+		return RespondSuccess(c, fiber.Map{
+			"message": "Update initiated. Downloading the new binary and restarting automatically.",
+		})
+
+	default:
+		return RespondBadRequest(c,
+			"Auto-update is not available. For Docker installs, mount /var/run/docker.sock and install the docker CLI. For standalone binaries, ensure the executable file is writable by this process.",
+			"")
+	}
+}
+

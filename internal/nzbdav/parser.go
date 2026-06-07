@@ -1,0 +1,668 @@
+package nzbdav
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"text/template"
+
+	"github.com/klauspost/compress/zstd"
+	_ "github.com/mattn/go-sqlite3"
+)
+
+// zstd frame magic: 0x28 0xB5 0x2F 0xFD.
+// nzbdav's blobstore stores some NZBs compressed and some as plain XML, so
+// sniff the header before deciding whether to decompress.
+var zstdMagic = []byte{0x28, 0xB5, 0x2F, 0xFD}
+
+const (
+	nzbPoster       = "nzbdav"
+	nzbGroup        = "alt.binaries.misc"
+	defaultSegBytes = 750_000
+)
+
+type Parser struct {
+	dbPath    string
+	blobsPath string
+}
+
+func NewParser(dbPath, blobsPath string) *Parser {
+	return &Parser{
+		dbPath:    dbPath,
+		blobsPath: blobsPath,
+	}
+}
+
+// davItem mirrors the DavItems row subset we need to resolve releases
+// and discover extracted-files subtrees.
+type davItem struct {
+	ID       string
+	ParentID sql.NullString
+	Name     string
+	Path     string
+	FileSize sql.NullInt64
+}
+
+// davTree indexes DavItems by ID and by parent ID for O(1) lookups.
+type davTree struct {
+	byID       map[string]*davItem
+	byParentID map[string][]*davItem
+}
+
+// Parse streams NZBs from the database
+func (p *Parser) Parse() (<-chan *ParsedNzb, <-chan error) {
+	out := make(chan *ParsedNzb)
+	errChan := make(chan error, 1)
+
+	go func() {
+		defer close(out)
+		defer close(errChan)
+
+		// Open read-only first to detect storage flavor. The blob-based path
+		// needs writes (NzbNames backfill — see backfillNzbNames), so it
+		// re-opens against a temp copy. Legacy storage stays on the read-only
+		// handle to avoid ever touching the source DB.
+		//
+		// immutable=1 promises SQLite the file won't change underneath it, and
+		// in return SQLite never writes anything (no WAL/SHM sidecars, no
+		// header rewrites). mode=ro alone still mutates the header on open
+		// because go-sqlite3 issues PRAGMAs that touch the file.
+		roDB, err := sql.Open("sqlite3", p.dbPath+"?mode=ro&immutable=1")
+		if err != nil {
+			errChan <- fmt.Errorf("failed to open database: %w", err)
+			return
+		}
+		defer roDB.Close()
+		roDB.SetMaxOpenConns(25)
+		roDB.SetMaxIdleConns(10)
+
+		// Blob-based (alpha) storage is detected by presence of the NzbNames
+		// table and a configured blobs directory.
+		isBlobStorage := p.blobsPath != "" && hasTable(roDB, "NzbNames")
+
+		if isBlobStorage {
+			slog.InfoContext(context.Background(), "Detected blob-based NZBDav storage")
+
+			// All DB-bound work (backfill, tree load, discovery scan) is done
+			// inside this helper. The temp DB copy and its handle are released
+			// as soon as the helper returns — before any blob streaming or
+			// channel sends happen — so the temp file doesn't sit on disk for
+			// the (potentially long) duration of the consumer draining.
+			tree, blobOrder, rowsByBlob, err := p.prepareBlobImport()
+			if err != nil {
+				errChan <- err
+				return
+			}
+			p.parseBlobs(tree, blobOrder, rowsByBlob, out)
+			return
+		}
+
+		tree, err := loadDavTree(roDB)
+		if err != nil {
+			errChan <- fmt.Errorf("failed to load DavItems tree: %w", err)
+			return
+		}
+		p.parseLegacy(roDB, tree, out, errChan)
+	}()
+
+	return out, errChan
+}
+
+// copyDBToTemp duplicates the SQLite file at src to a sibling temp file the
+// caller owns. Returns the temp path and a cleanup func that removes both the
+// copy and any -wal/-shm sidecars that SQLite may create during use.
+func copyDBToTemp(src string) (string, func(), error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return "", nil, err
+	}
+	defer in.Close()
+
+	tmp, err := os.CreateTemp("", "altmount-nzbdav-*.db")
+	if err != nil {
+		return "", nil, err
+	}
+	tmpPath := tmp.Name()
+
+	if _, err := io.Copy(tmp, in); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return "", nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return "", nil, err
+	}
+
+	cleanup := func() {
+		os.Remove(tmpPath)
+		os.Remove(tmpPath + "-wal")
+		os.Remove(tmpPath + "-shm")
+	}
+	return tmpPath, cleanup, nil
+}
+
+// backfillNzbNames materializes a NzbNames row for every DavItem that points
+// at a non-empty NzbBlobId but has no matching name entry. nzbdav can land
+// rows in this half-populated state for release-folder children (SubType=201)
+// and the discovery query's INNER JOIN drops them on the floor.
+//
+// The synthetic FileName is the DavItem's Name with a .nzb suffix (stripping
+// a common media extension first to avoid double-suffix files like
+// "Foo.mkv.nzb" reading awkwardly).
+func backfillNzbNames(db *sql.DB) error {
+	_, err := db.Exec(`
+		INSERT OR IGNORE INTO NzbNames (Id, FileName)
+		SELECT DISTINCT
+			d.NzbBlobId,
+			CASE
+				WHEN d.Name LIKE '%.mkv' OR d.Name LIKE '%.mp4' OR d.Name LIKE '%.avi'
+					THEN substr(d.Name, 1, length(d.Name) - 4) || '.nzb'
+				ELSE d.Name || '.nzb'
+			END
+		FROM DavItems d
+		LEFT JOIN NzbNames n ON n.Id = d.NzbBlobId
+		WHERE d.SubType IN (201, 203)
+			AND d.NzbBlobId IS NOT NULL
+			AND d.NzbBlobId != ''
+			AND d.NzbBlobId != '00000000-0000-0000-0000-000000000000'
+			AND n.Id IS NULL
+	`)
+	return err
+}
+
+func hasTable(db *sql.DB, name string) bool {
+	var count int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", name,
+	).Scan(&count); err != nil {
+		return false
+	}
+	return count > 0
+}
+
+func loadDavTree(db *sql.DB) (*davTree, error) {
+	rows, err := db.Query(`SELECT Id, ParentId, Name, COALESCE(Path, ''), FileSize FROM DavItems`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tree := &davTree{
+		byID:       make(map[string]*davItem),
+		byParentID: make(map[string][]*davItem),
+	}
+	for rows.Next() {
+		it := &davItem{}
+		if err := rows.Scan(&it.ID, &it.ParentID, &it.Name, &it.Path, &it.FileSize); err != nil {
+			return nil, err
+		}
+		tree.byID[it.ID] = it
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, it := range tree.byID {
+		if it.ParentID.Valid {
+			tree.byParentID[it.ParentID.String] = append(tree.byParentID[it.ParentID.String], it)
+		}
+	}
+	return tree, nil
+}
+
+// releaseFor returns the nzbdav folder that logically groups this file — the
+// nearest ancestor folder whose name is not "extracted". For a file at
+// /content/uncategorized/My.Release/file.mkv the release is My.Release; for
+// /movies/Release/extracted/file.mkv it's still Release (the /extracted folder
+// is skipped).
+func (t *davTree) releaseFor(id string) *davItem {
+	it, ok := t.byID[id]
+	if !ok {
+		return nil
+	}
+	cur := it
+	if cur.ParentID.Valid {
+		cur = t.byID[cur.ParentID.String]
+	} else {
+		return it
+	}
+	for cur != nil {
+		if !strings.EqualFold(cur.Name, "extracted") {
+			return cur
+		}
+		if !cur.ParentID.Valid {
+			return cur
+		}
+		cur = t.byID[cur.ParentID.String]
+	}
+	return it
+}
+
+// extractedFilesUnder returns all descendant items whose path contains
+// "/extracted/" and that have a positive FileSize.
+func (t *davTree) extractedFilesUnder(releaseID string) []ExtractedFileInfo {
+	var out []ExtractedFileInfo
+	var walk func(id string)
+	walk = func(id string) {
+		for _, child := range t.byParentID[id] {
+			if strings.Contains(child.Path, "/extracted/") && child.FileSize.Valid && child.FileSize.Int64 > 0 {
+				out = append(out, ExtractedFileInfo{Name: child.Name, Size: child.FileSize.Int64})
+			}
+			walk(child.ID)
+		}
+	}
+	walk(releaseID)
+	return out
+}
+
+// blobRow holds one row from the parseBlobs query.
+type blobRow struct {
+	id, fileName, davName, releasePath, blobId string
+}
+
+// prepareBlobImport does every DB-touching step for the blob-storage path —
+// stages a temp DB copy, runs the NzbNames backfill, loads the DavItems tree,
+// and buffers the full discovery result set into memory. All resources tied to
+// the temp DB (handle + on-disk file + WAL/SHM sidecars) are released before
+// this function returns, so the subsequent (potentially long) blob streaming
+// phase doesn't pin them.
+func (p *Parser) prepareBlobImport() (*davTree, []string, map[string][]blobRow, error) {
+	copyPath, cleanup, err := copyDBToTemp(p.dbPath)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to stage temp DB copy: %w", err)
+	}
+	defer cleanup()
+
+	rwDB, err := sql.Open("sqlite3", copyPath+"?_journal_mode=WAL")
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to open temp DB copy: %w", err)
+	}
+	defer rwDB.Close()
+	rwDB.SetMaxOpenConns(25)
+	rwDB.SetMaxIdleConns(10)
+
+	if err := backfillNzbNames(rwDB); err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to backfill NzbNames: %w", err)
+	}
+
+	tree, err := loadDavTree(rwDB)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to load DavItems tree: %w", err)
+	}
+
+	rows, err := rwDB.Query(`
+		SELECT
+			d.Id,
+			n.FileName,
+			COALESCE(d.Name, '') as DavName,
+			COALESCE(d.Path, '/') as ReleasePath,
+			d.NzbBlobId
+		FROM DavItems d
+		JOIN NzbNames n ON n.Id = d.NzbBlobId
+		WHERE d.NzbBlobId IS NOT NULL
+		AND d.NzbBlobId != ''
+		AND d.NzbBlobId != '00000000-0000-0000-0000-000000000000'
+		AND d.SubType IN (201, 203)
+	`)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to query blob files: %w", err)
+	}
+	defer rows.Close()
+
+	// Buffer all rows grouped by blobId, preserving first-seen order. Once
+	// this loop ends and the deferred Close/cleanup chain unwinds, the temp
+	// DB is gone from disk.
+	var blobOrder []string
+	rowsByBlob := make(map[string][]blobRow)
+	for rows.Next() {
+		var r blobRow
+		if err := rows.Scan(&r.id, &r.fileName, &r.davName, &r.releasePath, &r.blobId); err != nil {
+			slog.ErrorContext(context.Background(), "Failed to scan blob row", "error", err)
+			continue
+		}
+		if _, seen := rowsByBlob[r.blobId]; !seen {
+			blobOrder = append(blobOrder, r.blobId)
+		}
+		rowsByBlob[r.blobId] = append(rowsByBlob[r.blobId], r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to iterate blob files: %w", err)
+	}
+
+	return tree, blobOrder, rowsByBlob, nil
+}
+
+func (p *Parser) parseBlobs(tree *davTree, blobOrder []string, rowsByBlob map[string][]blobRow, out chan<- *ParsedNzb) {
+	// Emit one ParsedNzb per blob group.
+	// The first row in each group becomes the canonical item; additional rows
+	// become ParsedNzbAlias entries so the scanner can register migration rows
+	// for every DavItem ID that shares the blob.
+	count := 0
+	for _, blobId := range blobOrder {
+		group := rowsByBlob[blobId]
+		canonical := group[0]
+
+		if len(blobId) < 4 {
+			slog.WarnContext(context.Background(), "Invalid blob ID", "id", blobId)
+			continue
+		}
+
+		release := tree.releaseFor(canonical.id)
+		releaseName := strings.TrimSuffix(canonical.fileName, ".nzb")
+		releaseParentPath := canonical.releasePath
+		releaseID := canonical.id
+		if release != nil {
+			releaseID = release.ID
+			if release.Name != "" {
+				releaseName = release.Name
+			}
+			releaseParentPath = release.Path
+		}
+		parentPath := trimLastSegment(releaseParentPath)
+		category, relPath := p.splitPath(parentPath)
+
+		lowerBlobID := strings.ToLower(blobId)
+		blobPath := filepath.Join(p.blobsPath, lowerBlobID[0:2], lowerBlobID[2:4], lowerBlobID)
+		blobFile, err := os.Open(blobPath)
+		if err != nil {
+			slog.ErrorContext(context.Background(), "Failed to open blob file", "path", blobPath, "error", err)
+			continue
+		}
+
+		pr, pw := io.Pipe()
+		go func() {
+			defer blobFile.Close()
+
+			br := bufio.NewReader(blobFile)
+			head, _ := br.Peek(len(zstdMagic))
+			if bytes.Equal(head, zstdMagic) {
+				zr, err := zstd.NewReader(br)
+				if err != nil {
+					pw.CloseWithError(err)
+					return
+				}
+				defer zr.Close()
+				if _, err := io.Copy(pw, zr); err != nil {
+					pw.CloseWithError(err)
+					return
+				}
+			} else {
+				if _, err := io.Copy(pw, br); err != nil {
+					pw.CloseWithError(err)
+					return
+				}
+			}
+			pw.Close()
+		}()
+
+		// Build alias list from remaining rows. Rows with the same DavName as the
+		// canonical are duplicates (nzbdav nested-folder bug); rows with distinct
+		// DavNames represent individual episode files within a season-pack blob.
+		var aliases []ParsedNzbAlias
+		for _, r := range group[1:] {
+			aliases = append(aliases, ParsedNzbAlias{ID: r.id, Name: r.davName})
+		}
+
+		out <- &ParsedNzb{
+			ID:             canonical.id,
+			Name:           releaseName,
+			Category:       category,
+			RelPath:        relPath,
+			Content:        pr,
+			ExtractedFiles: tree.extractedFilesUnder(releaseID),
+			DavItemName:    canonical.davName,
+			AliasDavItems:  aliases,
+		}
+		count++
+	}
+	slog.InfoContext(context.Background(), "NZBDav blob import scan completed", "total_files", count)
+}
+
+func (p *Parser) parseLegacy(db *sql.DB, tree *davTree, out chan<- *ParsedNzb, errChan chan<- error) {
+	rows, err := db.Query(`
+		SELECT c.Id, c.Name, c.FileSize, n.SegmentIds
+		FROM DavItems c
+		JOIN DavNzbFiles n ON n.Id = c.Id
+	`)
+	if err != nil {
+		errChan <- fmt.Errorf("failed to query files: %w", err)
+		return
+	}
+	defer rows.Close()
+
+	// Group file rows by the resolved release id.
+	grouped := make(map[string][]nzbFileRow)
+	releaseOrder := make([]string, 0)
+	count := 0
+	for rows.Next() {
+		var r nzbFileRow
+		if err := rows.Scan(&r.fileID, &r.fileName, &r.fileSize, &r.segmentIDs); err != nil {
+			slog.ErrorContext(context.Background(), "Failed to scan row", "error", err)
+			continue
+		}
+
+		release := tree.releaseFor(r.fileID)
+		if release == nil {
+			continue
+		}
+
+		// Clone RawBytes: driver reuses the underlying buffer on next Scan.
+		segCopy := make(sql.RawBytes, len(r.segmentIDs))
+		copy(segCopy, r.segmentIDs)
+		r.segmentIDs = segCopy
+
+		if _, seen := grouped[release.ID]; !seen {
+			releaseOrder = append(releaseOrder, release.ID)
+		}
+		grouped[release.ID] = append(grouped[release.ID], r)
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		errChan <- fmt.Errorf("failed to iterate files: %w", err)
+		return
+	}
+
+	slog.InfoContext(context.Background(), "NZBDav import scan completed", "total_files", count, "releases", len(releaseOrder))
+
+	for _, releaseID := range releaseOrder {
+		release := tree.byID[releaseID]
+		if release == nil {
+			continue
+		}
+
+		// Skip files that are themselves inside an /extracted subtree — they're
+		// recorded separately in ExtractedFiles rather than emitted as NZB entries.
+		var primary []nzbFileRow
+		for _, r := range grouped[releaseID] {
+			item := tree.byID[r.fileID]
+			if item != nil && strings.Contains(item.Path, "/extracted/") {
+				continue
+			}
+			primary = append(primary, r)
+		}
+		if len(primary) == 0 {
+			continue
+		}
+
+		category, relPath := p.splitPath(trimLastSegment(release.Path))
+		releaseName := release.Name
+		if strings.EqualFold(releaseName, "extracted") {
+			// Defensive: releaseFor should have stopped one level higher, but
+			// preserve the original fallback just in case the tree is malformed.
+			parts := strings.Split(strings.Trim(release.Path, "/"), "/")
+			for i := len(parts) - 1; i >= 0; i-- {
+				if !strings.EqualFold(parts[i], "extracted") {
+					releaseName = parts[i]
+					break
+				}
+			}
+		}
+
+		pr, pw := io.Pipe()
+		parsed := &ParsedNzb{
+			ID:             releaseID,
+			Name:           releaseName,
+			Category:       category,
+			RelPath:        relPath,
+			Content:        pr,
+			ExtractedFiles: tree.extractedFilesUnder(releaseID),
+		}
+
+		out <- parsed
+
+		go writeReleaseNzb(pw, releaseName, primary)
+	}
+}
+
+func writeReleaseNzb(pw *io.PipeWriter, releaseName string, files []nzbFileRow) {
+	header := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nzb PUBLIC "-//newzBin//DTD NZB 1.1//EN" "http://www.newzbin.com/DTD/nzb/nzb-1.1.dtd">
+<nzb xmlns="http://www.newzbin.com/DTD/nzb/nzb-1.1.dtd">
+	<head>
+		<meta type="name">` + template.HTMLEscapeString(releaseName) + `</meta>
+	</head>
+`
+	if _, err := pw.Write([]byte(header)); err != nil {
+		pw.CloseWithError(err)
+		return
+	}
+
+	warnedMissingSize := false
+	for _, f := range files {
+		if !f.fileSize.Valid && !warnedMissingSize {
+			slog.WarnContext(context.Background(),
+				"NZBDav file has no FileSize; using default segment size",
+				"release", releaseName, "file", f.fileName, "default_bytes", defaultSegBytes)
+			warnedMissingSize = true
+		}
+		if err := writeFileEntry(pw, f.fileID, f.fileName, f.fileSize, f.segmentIDs); err != nil {
+			slog.ErrorContext(context.Background(), "Failed to write file entry",
+				"release", releaseName, "file", f.fileName, "error", err)
+			pw.CloseWithError(err)
+			return
+		}
+	}
+
+	if _, err := pw.Write([]byte("</nzb>")); err != nil {
+		pw.CloseWithError(err)
+		return
+	}
+	pw.Close()
+}
+
+type nzbFileRow struct {
+	fileID     string
+	fileName   string
+	fileSize   sql.NullInt64
+	segmentIDs sql.RawBytes
+}
+
+// splitPath splits a path into (firstSegment, rest) so that
+// filepath.Join(firstSegment, rest, releaseName) reproduces the original
+// nzbdav path verbatim. This preserves nzbdav's folder structure — no
+// movies/tv/other bucketing.
+//
+// Example: "/content/uncategorized" → ("content", "uncategorized").
+// Example: "/movies"                → ("movies", "").
+// Example: "" or "/"                → ("other", "") as a safe default.
+func (p *Parser) splitPath(path string) (first, rest string) {
+	cleaned := strings.ReplaceAll(path, "\\", "/")
+	cleaned = strings.Trim(cleaned, "/")
+	if cleaned == "" {
+		return "other", ""
+	}
+	parts := strings.Split(cleaned, "/")
+	return parts[0], strings.Join(parts[1:], "/")
+}
+
+// trimLastSegment drops the final path segment (the release or file name),
+// returning the parent path. "/a/b/c" → "/a/b", "/a" → "", "/" → "".
+func trimLastSegment(path string) string {
+	cleaned := strings.ReplaceAll(path, "\\", "/")
+	cleaned = strings.Trim(cleaned, "/")
+	if cleaned == "" {
+		return ""
+	}
+	parts := strings.Split(cleaned, "/")
+	if len(parts) <= 1 {
+		return ""
+	}
+	return "/" + strings.Join(parts[:len(parts)-1], "/")
+}
+
+// writeFileEntry writes a single file's segments to the NZB writer.
+func writeFileEntry(w io.Writer, fileId, fileName string, fileSize sql.NullInt64, segmentIdsJSON sql.RawBytes) error {
+	if len(segmentIdsJSON) == 0 {
+		return nil
+	}
+
+	var segmentIds []string
+	if err := json.Unmarshal(segmentIdsJSON, &segmentIds); err != nil {
+		return fmt.Errorf("failed to unmarshal segment IDs: %w", err)
+	}
+	if len(segmentIds) == 0 {
+		return nil
+	}
+
+	totalBytes := int64(0)
+	if fileSize.Valid {
+		totalBytes = fileSize.Int64
+	}
+
+	bytesPerSegment := int64(defaultSegBytes)
+	if totalBytes > 0 {
+		bytesPerSegment = totalBytes / int64(len(segmentIds))
+		if bytesPerSegment <= 0 {
+			bytesPerSegment = 1
+		}
+	}
+
+	subject := template.HTMLEscapeString(fileName)
+	if fileId != "" {
+		subject = fmt.Sprintf("NZBDAV_ID:%s %s", template.HTMLEscapeString(fileId), template.HTMLEscapeString(fileName))
+	}
+
+	fileHeader := fmt.Sprintf(`	<file poster="%s" date="%d" subject="%s">
+		<groups>
+			<group>%s</group>
+		</groups>
+		<segments>
+`, nzbPoster, 0, subject, nzbGroup)
+
+	if _, err := w.Write([]byte(fileHeader)); err != nil {
+		return err
+	}
+
+	for i, msgId := range segmentIds {
+		segBytes := bytesPerSegment
+		if i == len(segmentIds)-1 && totalBytes > 0 {
+			segBytes = totalBytes - (bytesPerSegment * int64(i))
+			if segBytes <= 0 {
+				segBytes = bytesPerSegment
+			}
+		}
+		if segBytes <= 0 {
+			segBytes = defaultSegBytes
+		}
+
+		segmentLine := fmt.Sprintf(`			<segment bytes="%d" number="%d">%s</segment>
+`, segBytes, i+1, template.HTMLEscapeString(msgId))
+
+		if _, err := w.Write([]byte(segmentLine)); err != nil {
+			return err
+		}
+	}
+
+	if _, err := w.Write([]byte("		</segments>\n\t</file>\n")); err != nil {
+		return err
+	}
+	return nil
+}

@@ -1,0 +1,628 @@
+import { AlertTriangle, Check, Loader, Save, Wifi } from "lucide-react";
+import { useEffect, useState } from "react";
+import { useToast } from "../../contexts/ToastContext";
+import { useProviders } from "../../hooks/useProviders";
+import type { ProviderConfig, ProviderFormData } from "../../types/config";
+
+interface ProviderModalProps {
+	mode: "create" | "edit";
+	provider?: ProviderConfig | null;
+	onSuccess: () => void;
+	onCancel: () => void;
+}
+
+const BYTES_PER_GB = 1_073_741_824;
+
+const defaultFormData: ProviderFormData = {
+	host: "",
+	port: 119,
+	username: "",
+	password: "",
+	max_connections: 10,
+	inflight_requests: 10,
+	tls: false,
+	insecure_tls: false,
+	proxy_url: "",
+	enabled: true,
+	is_backup_provider: false,
+	skip_ping: false,
+	keepalive_interval_seconds: 0,
+	keepalive_command: "",
+	user_agent: "",
+	quota_bytes: 0,
+	quota_period_hours: 0,
+};
+
+export function ProviderModal({ mode, provider, onSuccess, onCancel }: ProviderModalProps) {
+	const [formData, setFormData] = useState<ProviderFormData>(defaultFormData);
+	const [isTestingConnection, setIsTestingConnection] = useState(false);
+	const [connectionTestResult, setConnectionTestResult] = useState<{
+		success: boolean;
+		message?: string;
+		rttMs?: number;
+	} | null>(null);
+	const [canSave, setCanSave] = useState(false);
+	const [quotaEnabled, setQuotaEnabled] = useState(false);
+	const [quotaGbInput, setQuotaGbInput] = useState("");
+
+	const { testProvider, createProvider, updateProvider } = useProviders();
+	const { showToast } = useToast();
+
+	// Initialize form data when provider changes
+	useEffect(() => {
+		if (mode === "edit" && provider) {
+			setFormData({
+				host: provider.host,
+				port: provider.port,
+				username: provider.username,
+				password: "", // Always start with empty password for security
+				max_connections: provider.max_connections,
+				inflight_requests: provider.inflight_requests || 10,
+				tls: provider.tls,
+				insecure_tls: provider.insecure_tls,
+				proxy_url: provider.proxy_url || "",
+				enabled: provider.enabled,
+				is_backup_provider: provider.is_backup_provider,
+				skip_ping: provider.skip_ping ?? false,
+				keepalive_interval_seconds: provider.keepalive_interval_seconds ?? 0,
+				keepalive_command: provider.keepalive_command ?? "",
+				user_agent: provider.user_agent ?? "",
+				quota_bytes: provider.quota_bytes ?? 0,
+				quota_period_hours: provider.quota_period_hours ?? 0,
+			});
+			const qb = provider.quota_bytes ?? 0;
+			setQuotaEnabled(qb > 0);
+			setQuotaGbInput(qb > 0 ? String(Math.round((qb / BYTES_PER_GB) * 100) / 100) : "1");
+			// For edit mode, allow saving without testing if only non-connection fields change
+			setCanSave(true);
+		} else {
+			setFormData(defaultFormData);
+			setQuotaEnabled(false);
+			setQuotaGbInput("1");
+			setCanSave(false);
+		}
+		setConnectionTestResult(null);
+	}, [mode, provider]);
+
+	const handleInputChange = (field: keyof ProviderFormData, value: string | number | boolean) => {
+		setFormData((prev) => ({ ...prev, [field]: value }));
+
+		// Reset connection test if connection-related fields change
+		if (
+			["host", "port", "username", "password", "tls", "insecure_tls", "proxy_url"].includes(field)
+		) {
+			setConnectionTestResult(null);
+			setCanSave(false);
+		}
+	};
+
+	const handleTestConnection = async () => {
+		if (!formData.host || !formData.username || !formData.password) {
+			showToast({
+				type: "warning",
+				title: "Missing Required Fields",
+				message: "Please fill in all required fields before testing connection",
+			});
+			return;
+		}
+
+		setIsTestingConnection(true);
+		setConnectionTestResult(null);
+
+		try {
+			const result = await testProvider.mutateAsync({
+				provider_id: provider?.id,
+				host: formData.host,
+				port: formData.port,
+				username: formData.username,
+				password: formData.password,
+				tls: formData.tls,
+				insecure_tls: formData.insecure_tls,
+				proxy_url: formData.proxy_url || undefined,
+				skip_ping: formData.skip_ping,
+			});
+
+			setConnectionTestResult({
+				success: result.success,
+				message: result.error_message,
+				rttMs: result.rtt_ms,
+			});
+
+			setCanSave(result.success);
+		} catch (error) {
+			setConnectionTestResult({
+				success: false,
+				message: error instanceof Error ? error.message : "Connection test failed",
+			});
+			setCanSave(false);
+		} finally {
+			setIsTestingConnection(false);
+		}
+	};
+
+	const handleSave = async () => {
+		if (mode === "create" && !canSave && !formData.skip_ping) {
+			showToast({
+				type: "warning",
+				title: "Connection Test Required",
+				message: "Please test the connection successfully before saving a new provider",
+			});
+			return;
+		}
+
+		try {
+			if (mode === "create") {
+				await createProvider.mutateAsync({
+					...formData,
+					proxy_url: formData.proxy_url || undefined,
+				});
+			} else if (mode === "edit" && provider) {
+				// Only send changed fields for update
+				const updateData: Partial<ProviderFormData> = {};
+
+				if (formData.host !== provider.host) updateData.host = formData.host;
+				if (formData.port !== provider.port) updateData.port = formData.port;
+				if (formData.username !== provider.username) updateData.username = formData.username;
+				if (formData.password) updateData.password = formData.password; // Only include if not empty
+				if (formData.max_connections !== provider.max_connections)
+					updateData.max_connections = formData.max_connections;
+				if (formData.inflight_requests !== provider.inflight_requests)
+					updateData.inflight_requests = formData.inflight_requests;
+				if (formData.tls !== provider.tls) updateData.tls = formData.tls;
+				if (formData.insecure_tls !== provider.insecure_tls)
+					updateData.insecure_tls = formData.insecure_tls;
+				if (formData.proxy_url !== (provider.proxy_url || ""))
+					updateData.proxy_url = formData.proxy_url;
+				if (formData.enabled !== provider.enabled) updateData.enabled = formData.enabled;
+				if (formData.is_backup_provider !== provider.is_backup_provider)
+					updateData.is_backup_provider = formData.is_backup_provider;
+				if (formData.skip_ping !== (provider.skip_ping ?? false))
+					updateData.skip_ping = formData.skip_ping;
+				if (formData.keepalive_interval_seconds !== (provider.keepalive_interval_seconds ?? 0))
+					updateData.keepalive_interval_seconds = formData.keepalive_interval_seconds;
+				if (formData.keepalive_command !== (provider.keepalive_command ?? ""))
+					updateData.keepalive_command = formData.keepalive_command;
+				if (formData.user_agent !== (provider.user_agent ?? ""))
+					updateData.user_agent = formData.user_agent;
+				if (formData.quota_bytes !== (provider.quota_bytes ?? 0))
+					updateData.quota_bytes = formData.quota_bytes;
+				if (formData.quota_period_hours !== (provider.quota_period_hours ?? 0))
+					updateData.quota_period_hours = formData.quota_period_hours;
+
+				await updateProvider.mutateAsync({
+					id: provider.id,
+					data: updateData,
+				});
+			}
+
+			onSuccess();
+		} catch (error) {
+			console.error("Failed to save provider:", error);
+			showToast({
+				type: "error",
+				title: "Save Failed",
+				message: "Failed to save provider. Please try again.",
+			});
+		}
+	};
+
+	const isFormValid = formData.host && formData.username && (mode === "edit" || formData.password);
+	const isSaving = createProvider.isPending || updateProvider.isPending;
+
+	return (
+		<div className="modal modal-open backdrop-blur-sm">
+			<div className="modal-box w-full min-w-0 max-w-none rounded-none border border-base-300 shadow-2xl sm:max-w-2xl sm:rounded-2xl">
+				<h3 className="mb-6 font-black text-xl uppercase tracking-tighter">
+					{mode === "create" ? "Add New Provider" : "Edit Provider"}
+				</h3>
+
+				<form className="min-w-0 space-y-6" onSubmit={(e) => e.preventDefault()}>
+					{/* Host */}
+					<fieldset className="fieldset">
+						<legend className="fieldset-legend font-bold">NNTP Host *</legend>
+						<input
+							id="host"
+							type="text"
+							className="input input-bordered w-full font-mono text-sm"
+							value={formData.host}
+							onChange={(e) => handleInputChange("host", e.target.value)}
+							placeholder="news.example.com"
+							required
+						/>
+					</fieldset>
+
+					{/* Connection Details */}
+					<div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+						<fieldset className="fieldset">
+							<legend className="fieldset-legend font-bold">Port</legend>
+							<input
+								id="port"
+								type="number"
+								className="input input-bordered w-full font-mono text-sm"
+								value={formData.port}
+								onChange={(e) =>
+									handleInputChange("port", Number.parseInt(e.target.value, 10) || 119)
+								}
+								min={1}
+								max={65535}
+							/>
+						</fieldset>
+
+						<fieldset className="fieldset">
+							<legend className="fieldset-legend font-bold">Max Connections</legend>
+							<input
+								id="max_connections"
+								type="number"
+								className="input input-bordered w-full font-mono text-sm"
+								value={formData.max_connections}
+								onChange={(e) =>
+									handleInputChange("max_connections", Number.parseInt(e.target.value, 10) || 1)
+								}
+								min={1}
+								max={100}
+							/>
+						</fieldset>
+
+						<fieldset className="fieldset">
+							<legend className="fieldset-legend font-bold">Pipeline (Inflight)</legend>
+							<input
+								id="inflight_requests"
+								type="number"
+								className="input input-bordered w-full font-mono text-sm"
+								value={formData.inflight_requests}
+								onChange={(e) =>
+									handleInputChange("inflight_requests", Number.parseInt(e.target.value, 10) || 1)
+								}
+								min={1}
+								max={100}
+							/>
+							<p className="label mt-1 text-base-content/70 text-xs">
+								Requests per connection. Default is 10.
+							</p>
+						</fieldset>
+					</div>
+
+					{/* Authentication */}
+					<div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+						<fieldset className="fieldset">
+							<legend className="fieldset-legend font-bold">Username *</legend>
+							<input
+								id="username"
+								type="text"
+								className="input input-bordered w-full font-mono text-sm"
+								value={formData.username}
+								onChange={(e) => handleInputChange("username", e.target.value)}
+								required
+							/>
+						</fieldset>
+
+						<fieldset className="fieldset">
+							<legend className="fieldset-legend font-bold">
+								Password {mode === "create" ? "*" : ""}
+							</legend>
+							<input
+								id="password"
+								type="password"
+								className="input input-bordered w-full font-mono text-sm"
+								value={formData.password}
+								onChange={(e) => handleInputChange("password", e.target.value)}
+								placeholder={mode === "edit" ? "••••••••••••••••" : ""}
+								required={mode === "create"}
+							/>
+							{mode === "edit" && (
+								<p className="label text-base-content/70 text-xs">Leave empty to keep current.</p>
+							)}
+						</fieldset>
+					</div>
+
+					{/* Security Settings */}
+					<div className="min-w-0 space-y-4 rounded-2xl border-2 border-base-300/80 bg-base-200/60 p-5">
+						<h4 className="font-bold text-base-content/60 text-xs uppercase tracking-widest">
+							Options & Security
+						</h4>
+
+						<div className="flex min-w-0 flex-col gap-4">
+							<label
+								htmlFor="tls"
+								className="label w-full min-w-0 cursor-pointer items-start justify-start gap-3"
+							>
+								<input
+									id="tls"
+									type="checkbox"
+									className="checkbox checkbox-primary checkbox-sm mt-0.5 shrink-0"
+									checked={formData.tls}
+									onChange={(e) => handleInputChange("tls", e.target.checked)}
+								/>
+								<div className="min-w-0 flex-1">
+									<span className="label-text font-bold text-xs">Use SSL/TLS</span>
+									<span className="block break-words text-base-content/70 text-xs">
+										Highly recommended for privacy.
+									</span>
+								</div>
+							</label>
+
+							{formData.tls && (
+								<label
+									htmlFor="insecure_tls"
+									className="label ml-0 w-full min-w-0 cursor-pointer items-start justify-start gap-3 border-base-300 border-l-2 pl-4 sm:ml-7 sm:border-l-0 sm:pl-0"
+								>
+									<input
+										id="insecure_tls"
+										type="checkbox"
+										className="checkbox checkbox-warning checkbox-sm mt-0.5 shrink-0"
+										checked={formData.insecure_tls}
+										onChange={(e) => handleInputChange("insecure_tls", e.target.checked)}
+									/>
+									<div className="min-w-0 flex-1">
+										<span className="label-text font-bold text-xs">
+											Insecure (Skip Verification)
+										</span>
+										<span className="block break-words text-base-content/70 text-xs">
+											Only use for self-signed certs.
+										</span>
+									</div>
+								</label>
+							)}
+
+							<label
+								htmlFor="is_backup_provider"
+								className="label w-full min-w-0 cursor-pointer items-start justify-start gap-3"
+							>
+								<input
+									id="is_backup_provider"
+									type="checkbox"
+									className="checkbox checkbox-primary checkbox-sm mt-0.5 shrink-0"
+									checked={formData.is_backup_provider}
+									onChange={(e) => handleInputChange("is_backup_provider", e.target.checked)}
+								/>
+								<div className="min-w-0 flex-1">
+									<span className="label-text font-bold text-xs">Backup Only</span>
+									<span className="block break-words text-base-content/70 text-xs">
+										Only use when primary providers fail.
+									</span>
+								</div>
+							</label>
+
+							<label
+								htmlFor="skip_ping"
+								className="label w-full min-w-0 cursor-pointer items-start justify-start gap-3"
+							>
+								<input
+									id="skip_ping"
+									type="checkbox"
+									className="checkbox checkbox-primary checkbox-sm mt-0.5 shrink-0"
+									checked={formData.skip_ping}
+									onChange={(e) => handleInputChange("skip_ping", e.target.checked)}
+								/>
+								<div className="min-w-0 flex-1">
+									<span className="label-text font-bold text-xs">Skip server ping</span>
+									<span className="block text-balance break-words text-base-content/70 text-xs">
+										Enable if the server doesn't support the DATE command and you get a date/ping
+										error when connecting.
+									</span>
+								</div>
+							</label>
+						</div>
+					</div>
+
+					{/* Proxy Settings */}
+					<fieldset className="fieldset">
+						<legend className="fieldset-legend font-bold">SOCKS5 Proxy (Optional)</legend>
+						<input
+							id="proxy_url"
+							type="text"
+							className="input input-bordered w-full font-mono text-sm"
+							value={formData.proxy_url}
+							onChange={(e) => handleInputChange("proxy_url", e.target.value)}
+							placeholder="socks5://user:pass@host:port"
+						/>
+					</fieldset>
+
+					{/* Keep-Alive */}
+					<div className="space-y-4 rounded-2xl border-2 border-base-300/80 bg-base-200/60 p-5">
+						<h4 className="font-bold text-base-content/60 text-xs uppercase tracking-widest">
+							Keep-Alive
+						</h4>
+						<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+							<fieldset className="fieldset">
+								<legend className="fieldset-legend font-bold">Interval (seconds)</legend>
+								<input
+									id="keepalive_interval_seconds"
+									type="number"
+									className="input input-bordered w-full font-mono text-sm"
+									value={formData.keepalive_interval_seconds}
+									onChange={(e) =>
+										handleInputChange(
+											"keepalive_interval_seconds",
+											Number.parseInt(e.target.value, 10) || 0,
+										)
+									}
+									min={0}
+								/>
+								<p className="label mt-1 text-base-content/70 text-xs">
+									0 = disabled. Seconds between idle keepalive pings.
+								</p>
+							</fieldset>
+
+							<fieldset className="fieldset">
+								<legend className="fieldset-legend font-bold">Command</legend>
+								<input
+									id="keepalive_command"
+									type="text"
+									className="input input-bordered w-full font-mono text-sm"
+									value={formData.keepalive_command}
+									onChange={(e) => handleInputChange("keepalive_command", e.target.value)}
+									placeholder="DATE"
+									disabled={formData.keepalive_interval_seconds === 0}
+								/>
+								<p className="label mt-1 text-base-content/70 text-xs">
+									NNTP command for the probe. Defaults to DATE.
+								</p>
+							</fieldset>
+						</div>
+					</div>
+
+					{/* Download Quota */}
+					<div className="space-y-4 rounded-2xl border-2 border-base-300/80 bg-base-200/60 p-5">
+						<label
+							htmlFor="quota_enabled"
+							className="label w-full min-w-0 cursor-pointer items-start justify-start gap-3"
+						>
+							<input
+								id="quota_enabled"
+								type="checkbox"
+								className="checkbox checkbox-primary checkbox-sm mt-0.5 shrink-0"
+								checked={quotaEnabled}
+								onChange={(e) => {
+									setQuotaEnabled(e.target.checked);
+									if (!e.target.checked) {
+										handleInputChange("quota_bytes", 0);
+										handleInputChange("quota_period_hours", 0);
+									} else {
+										const gb = Number.parseFloat(quotaGbInput) || 1;
+										setQuotaGbInput(String(gb));
+										handleInputChange("quota_bytes", Math.round(gb * BYTES_PER_GB));
+									}
+								}}
+							/>
+							<div className="min-w-0 flex-1">
+								<span className="label-text font-bold text-xs">Download Quota</span>
+								<span className="block break-words text-base-content/70 text-xs">
+									Limit how much this provider can download per period.
+								</span>
+							</div>
+						</label>
+
+						{quotaEnabled && (
+							<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+								<fieldset className="fieldset">
+									<legend className="fieldset-legend font-bold">Quota Limit (GB)</legend>
+									<input
+										id="quota_bytes"
+										type="number"
+										className="input input-bordered w-full font-mono text-sm"
+										value={quotaGbInput}
+										onChange={(e) => {
+											setQuotaGbInput(e.target.value);
+											const gb = Number.parseFloat(e.target.value);
+											if (!Number.isNaN(gb) && gb > 0) {
+												handleInputChange("quota_bytes", Math.round(gb * BYTES_PER_GB));
+											}
+										}}
+										onBlur={() => {
+											const gb = Number.parseFloat(quotaGbInput);
+											if (Number.isNaN(gb) || gb <= 0) {
+												setQuotaGbInput("1");
+												handleInputChange("quota_bytes", BYTES_PER_GB);
+											}
+										}}
+										min={0.01}
+										step={1}
+									/>
+								</fieldset>
+
+								<fieldset className="fieldset">
+									<legend className="fieldset-legend font-bold">Reset Period</legend>
+									<select
+										id="quota_period_hours"
+										className="select select-bordered w-full font-mono text-sm"
+										value={formData.quota_period_hours}
+										onChange={(e) =>
+											handleInputChange("quota_period_hours", Number.parseInt(e.target.value, 10))
+										}
+									>
+										<option value={0}>Lifetime (never resets)</option>
+										<option value={24}>Daily (24h)</option>
+										<option value={168}>Weekly (7d)</option>
+										<option value={720}>Monthly (30d)</option>
+									</select>
+								</fieldset>
+							</div>
+						)}
+					</div>
+
+					{/* User-Agent */}
+					<fieldset className="fieldset">
+						<legend className="fieldset-legend font-bold">User-Agent (Optional)</legend>
+						<input
+							id="user_agent"
+							type="text"
+							className="input input-bordered w-full font-mono text-sm"
+							value={formData.user_agent}
+							onChange={(e) => handleInputChange("user_agent", e.target.value)}
+							placeholder="e.g. SABnzbd/4.5.5"
+						/>
+						<p className="label mt-1 text-base-content/70 text-xs">
+							Sent to the NNTP server. Leave empty to disable.
+						</p>
+					</fieldset>
+
+					{/* Connection Test */}
+					<div className="min-w-0 space-y-4 border-base-300/50 border-t pt-4">
+						<div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+							<h4 className="min-w-0 font-bold text-base-content/60 text-xs uppercase tracking-widest">
+								Connectivity Check
+							</h4>
+							<button
+								type="button"
+								className="btn btn-sm btn-outline px-4"
+								onClick={handleTestConnection}
+								disabled={!isFormValid || isTestingConnection}
+							>
+								{isTestingConnection ? (
+									<Loader className="h-3 w-3 animate-spin" />
+								) : (
+									<Wifi className="h-3 w-3" />
+								)}
+								Test Link
+							</button>
+						</div>
+
+						{connectionTestResult && (
+							<div
+								className={`alert rounded-xl py-2 text-xs ${
+									connectionTestResult.success
+										? "alert-success border-success/20 bg-success/10 text-success"
+										: "alert-error border-error/20 bg-error/10 text-error"
+								}`}
+							>
+								{connectionTestResult.success ? (
+									<Check className="h-4 w-4" />
+								) : (
+									<AlertTriangle className="h-4 w-4" />
+								)}
+								<div className="min-w-0">
+									<div className="font-black text-xs uppercase tracking-widest">
+										{connectionTestResult.success
+											? `Success${connectionTestResult.rttMs !== undefined ? ` • ${connectionTestResult.rttMs}ms` : ""}`
+											: "Failed"}
+									</div>
+									{connectionTestResult.message && (
+										<div className="mt-0.5 break-words font-medium">
+											{connectionTestResult.message}
+										</div>
+									)}
+								</div>
+							</div>
+						)}
+					</div>
+				</form>
+
+				<div className="modal-action gap-3">
+					<button type="button" className="btn btn-ghost" onClick={onCancel}>
+						Cancel
+					</button>
+					<button
+						type="button"
+						className="btn btn-primary px-8 shadow-lg shadow-primary/20"
+						onClick={handleSave}
+						disabled={isSaving || (mode === "create" && !canSave && !formData.skip_ping)}
+					>
+						{isSaving ? <Loader className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+						{mode === "create" ? "Create Provider" : "Save Changes"}
+					</button>
+				</div>
+			</div>
+		</div>
+	);
+}

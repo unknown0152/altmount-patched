@@ -1,0 +1,113 @@
+package singlefile
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/javi11/altmount/internal/importer/filesystem"
+	"github.com/javi11/altmount/internal/importer/parser"
+	"github.com/javi11/altmount/internal/importer/utils"
+	"github.com/javi11/altmount/internal/importer/validation"
+	"github.com/javi11/altmount/internal/metadata"
+	metapb "github.com/javi11/altmount/internal/metadata/proto"
+	"github.com/javi11/altmount/internal/pool"
+	"github.com/javi11/altmount/internal/progress"
+)
+
+// ProcessSingleFile processes a single file (creates and writes metadata).
+// Returns (virtualDir, writtenMetaPath, error). writtenMetaPath is the virtual path of the
+// metadata file written to disk; it is empty if no metadata was written.
+func ProcessSingleFile(
+	ctx context.Context,
+	virtualDir string,
+	file parser.ParsedFile,
+	par2Files []parser.ParsedFile,
+	nzbPath string,
+	metadataService *metadata.MetadataService,
+	poolManager pool.Manager,
+	maxValidationGoroutines int,
+	segmentSamplePercentage int,
+	allowedFileExtensions []string,
+	timeout time.Duration,
+	tracker *progress.Tracker,
+	filterSamples bool,
+) (string, string, error) {
+	// Validate file extension before processing
+	if !utils.HasAllowedFilesInRegular([]parser.ParsedFile{file}, allowedFileExtensions, filterSamples) {
+		slog.WarnContext(ctx, "File does not match allowed extensions",
+			"filename", file.Filename,
+			"allowed_extensions", allowedFileExtensions)
+		return "", "", fmt.Errorf("file '%s' does not match allowed extensions (allowed: %v)", file.Filename, allowedFileExtensions)
+	}
+
+	// Create virtual file path, then ensure it is unique.
+	// If a healthy file already exists at this path, a _1, _2, … suffix is
+	// appended to the stem so the new import lands alongside the existing one
+	// rather than being silently skipped.
+	virtualFilePath := filepath.Join(virtualDir, file.Filename)
+	virtualFilePath = strings.ReplaceAll(virtualFilePath, string(filepath.Separator), "/")
+	virtualFilePath = filesystem.EnsureUniqueVirtualPath(virtualFilePath, metadataService)
+
+	// Double check if this specific file is allowed
+	if !utils.IsAllowedFile(file.Filename, file.Size, allowedFileExtensions, filterSamples) {
+		return "", "", fmt.Errorf("file '%s' is not allowed", file.Filename)
+	}
+
+	// Validate segments
+	if err := validation.ValidateSegmentsForFile(
+		ctx,
+		file.Filename,
+		file.Size,
+		file.Segments,
+		file.Encryption,
+		poolManager,
+		maxValidationGoroutines,
+		segmentSamplePercentage,
+		tracker,
+		timeout,
+	); err != nil {
+		return "", "", err
+	}
+
+	// Convert PAR2 files to metadata format
+	var par2Refs []*metapb.Par2FileReference
+	for _, par2File := range par2Files {
+		par2Refs = append(par2Refs, &metapb.Par2FileReference{
+			Filename:    par2File.Filename,
+			FileSize:    par2File.Size,
+			SegmentData: par2File.Segments,
+		})
+	}
+
+	// Create file metadata
+	fileMeta := metadataService.CreateFileMetadata(
+		file.Size,
+		nzbPath,
+		metapb.FileStatus_FILE_STATUS_HEALTHY,
+		file.Segments,
+		file.Encryption,
+		file.Password,
+		file.Salt,
+		file.AesKey,
+		file.AesIv,
+		file.ReleaseDate.Unix(),
+		par2Refs,
+		file.NzbdavID,
+	)
+
+	// Write file metadata to disk
+	if err := metadataService.WriteFileMetadata(virtualFilePath, fileMeta); err != nil {
+		return "", "", fmt.Errorf("failed to write metadata for single file %s: %w", file.Filename, err)
+	}
+
+	slog.InfoContext(ctx, "Successfully processed single file",
+		"file", file.Filename,
+		"virtual_path", virtualFilePath,
+		"size", file.Size)
+
+	return virtualDir, virtualFilePath, nil
+}

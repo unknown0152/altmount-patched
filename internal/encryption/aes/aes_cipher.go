@@ -1,0 +1,98 @@
+package aes
+
+import (
+	"context"
+	"fmt"
+	"io"
+
+	"github.com/javi11/altmount/internal/utils"
+)
+
+// BlockSize is the AES block size in bytes (128 bits)
+const BlockSize = 16
+
+// EncryptedSize calculates the encrypted size for a given plaintext size.
+// AES-CBC pads data to 16-byte block boundary.
+func EncryptedSize(fileSize int64) int64 {
+	if fileSize%BlockSize == 0 {
+		return fileSize
+	}
+	return fileSize + (BlockSize - (fileSize % BlockSize))
+}
+
+// AesCipher handles AES-CBC decryption for encrypted archives
+// Used for password-protected RAR, 7z, and other AES-encrypted archive formats
+type AesCipher struct{}
+
+// NewAesCipher creates a new AES cipher
+func NewAesCipher() *AesCipher {
+	return &AesCipher{}
+}
+
+// OverheadSize returns the encryption overhead for AES-CBC
+// AES-CBC has minimal overhead (padding to block size)
+func (c *AesCipher) OverheadSize(fileSize int64) int64 {
+	return EncryptedSize(fileSize) - fileSize
+}
+
+// EncryptedSize calculates the encrypted size for a given plaintext size
+func (c *AesCipher) EncryptedSize(fileSize int64) int64 {
+	return EncryptedSize(fileSize)
+}
+
+// DecryptedSize calculates the decrypted size from encrypted size
+func (c *AesCipher) DecryptedSize(encryptedFileSize int64) (int64, error) {
+	// For AES-CBC, we can't know the exact size without decrypting
+	// due to padding, but we can provide a maximum
+	blockSize := int64(16)
+	// Maximum plaintext is encrypted size minus one block (worst case padding)
+	maxPlaintext := max(encryptedFileSize-blockSize, 0)
+	return maxPlaintext, nil
+}
+
+// Open creates a decrypting reader for AES-encrypted data
+// decryptedFileSize is the actual file size (output will be limited to this)
+func (c *AesCipher) Open(
+	ctx context.Context,
+	rh *utils.RangeHeader,
+	decryptedFileSize int64,
+	key []byte,
+	iv []byte,
+	getReader func(ctx context.Context, start, end int64) (io.ReadCloser, error),
+) (io.ReadCloser, error) {
+	// Validate key and IV
+	if len(key) == 0 {
+		return nil, fmt.Errorf("AES key is required")
+	}
+
+	if len(iv) == 0 {
+		return nil, fmt.Errorf("AES IV is required")
+	}
+
+	// Calculate encrypted size (round up to AES block boundary)
+	// Segments contain padded encrypted data, so we need to request the full encrypted size
+	encryptedSize := c.EncryptedSize(decryptedFileSize)
+
+	// Wrap with AES decryption
+	// The decrypt reader will lazily initialize the source reader when needed
+	// Pass both decrypted size (for output limiting) and encrypted size (for source reading)
+	requestEnd := int64(-1)
+	if rh != nil {
+		requestEnd = rh.End
+	}
+	decryptReader, err := newAesDecryptReader(ctx, getReader, key, iv, decryptedFileSize, encryptedSize, requestEnd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AES decrypt reader: %w", err)
+	}
+
+	// If a range header is provided, seek to the requested position
+	if rh != nil && rh.Start > 0 {
+		_, err := decryptReader.Seek(rh.Start, io.SeekStart)
+		if err != nil {
+			decryptReader.Close()
+			return nil, fmt.Errorf("failed to seek to start position: %w", err)
+		}
+	}
+
+	return decryptReader, nil
+}

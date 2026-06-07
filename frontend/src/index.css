@@ -1,0 +1,59 @@
+/** biome-ignore-all lint/suspicious/noUnknownAtRules: wrong lint */
+/** biome-ignore-all lint/correctness/noUnknownProperty: wrong lint */
+@import "tailwindcss";
+
+/* DaisyUI themes: retro (default light), forest (default dark), plus user-selectable options */
+@plugin "daisyui" {
+	themes:
+		retro --default,
+		business --prefersdark,
+		light,
+		cupcake,
+		bumblebee,
+		emerald,
+		corporate,
+		garden,
+		lofi,
+		pastel,
+		fantasy,
+		wireframe,
+		cmyk,
+		autumn,
+		lemonade,
+		winter,
+		nord,
+		caramellatte,
+		dark,
+		dim,
+		dracula,
+		synthwave,
+		halloween,
+		luxury,
+		night,
+		coffee,
+		business,
+		sunset,
+		abyss;
+}
+
+@plugin "@tailwindcss/typography";
+
+/* Fix for native <fieldset> min-inline-size: min-content default which causes
+   fieldset to be as wide as its <legend> text, overflowing containers on mobile */
+fieldset {
+	min-width: 0;
+}
+
+/* Fix for DaisyUI menu active state on buttons */
+.menu li > button.active {
+	@apply bg-primary text-primary-content;
+}
+
+/* Global enhancements for block contrast */
+.card {
+	@apply border border-base-300 shadow-xl;
+}
+
+.dropdown-content {
+	@apply border border-base-300 shadow-2xl;
+}

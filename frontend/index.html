@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon-180x180.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1d1d1d" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f5f0e8" />
+    <title>AltMount</title>
+    <meta name="description" content="A nzb mounting application" />
+    <!-- Theme detection script - must run before React -->
+    <script>
+      (function() {
+        // Check if user has a saved preference
+        const savedTheme = localStorage.getItem('theme');
+
+        // Check system preference
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+        // Apply theme: saved preference > system preference > default (retro)
+        const theme = savedTheme || (prefersDark ? 'business' : 'retro');
+        document.documentElement.setAttribute('data-theme', theme);
+
+        // Listen for system theme changes
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+          if (!localStorage.getItem('theme')) {
+            // Only auto-switch if user hasn't set a manual preference
+            document.documentElement.setAttribute('data-theme', e.matches ? 'business' : 'retro');
+          }
+        });
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

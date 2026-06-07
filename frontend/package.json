@@ -1,0 +1,46 @@
+{
+	"name": "frontend",
+	"private": true,
+	"version": "0.0.0",
+	"type": "module",
+	"scripts": {
+		"dev": "vite",
+		"build": "tsc -b && vite build",
+		"lint": "biome lint --write --unsafe ./src",
+		"check": "biome check --write --unsafe ./src",
+		"preview": "vite preview",
+		"pwa-assets": "pwa-assets-generator --preset minimal public/logo.png"
+	},
+	"dependencies": {
+		"@tanstack/react-query": "^5.85.5",
+		"@tanstack/react-query-devtools": "^5.85.5",
+		"@tanstack/react-virtual": "^3.13.22",
+		"clsx": "^2.1.1",
+		"cron-parser": "^5.5.0",
+		"cronstrue": "^3.14.0",
+		"date-fns": "^3.0.0",
+		"lucide-react": "^0.540.0",
+		"react": "^19.1.1",
+		"react-dom": "^19.1.1",
+		"react-hook-form": "^7.62.0",
+		"react-router-dom": "^7.8.1",
+		"recharts": "^3.1.2",
+		"webdav": "^5.8.0",
+		"zod": "^4.0.17"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.2.2",
+		"@tailwindcss/typography": "^0.5.16",
+		"@tailwindcss/vite": "^4.1.12",
+		"@types/node": "^24.3.1",
+		"@types/react": "^19.1.10",
+		"@types/react-dom": "^19.1.7",
+		"@vite-pwa/assets-generator": "^1.0.2",
+		"@vitejs/plugin-react": "^5.0.0",
+		"daisyui": "^5.0.50",
+		"tailwindcss": "^4.1.12",
+		"typescript": "~5.8.3",
+		"vite": "^7.1.2",
+		"vite-plugin-pwa": "^1.2.0"
+	}
+}

@@ -1,0 +1,973 @@
+// Configuration types that match the backend API structure
+
+// Mount type for unified mount configuration
+export type MountType = "none" | "rclone" | "fuse" | "rclone_external";
+
+// Base configuration response from API
+export interface ConfigResponse {
+	webdav: WebDAVConfig;
+	api: APIConfig;
+	auth: AuthConfig;
+	database: DatabaseConfig;
+	metadata: MetadataConfig;
+	streaming: StreamingConfig;
+	health: HealthConfig;
+	rclone: RCloneConfig;
+	fuse: FuseConfig;
+	segment_cache: SegmentCacheConfig;
+	import: ImportConfig;
+	log: LogConfig;
+	sabnzbd: SABnzbdConfig;
+	arrs: ArrsConfig;
+	stremio: StremioConfig;
+	providers: ProviderConfig[];
+	nzblnk: NzblnkConfig;
+	network: NetworkConfig;
+	mount_path: string;
+	mount_type: MountType;
+	api_key?: string;
+	download_key?: string;
+	profiler_enabled: boolean;
+}
+
+// WebDAV server configuration
+export interface WebDAVConfig {
+	port: number;
+	user: string;
+	password: string;
+	host?: string;
+	debug?: boolean;
+}
+
+// API server configuration
+export interface APIConfig {
+	prefix: string;
+}
+
+// Authentication configuration
+export interface AuthConfig {
+	login_required: boolean;
+}
+
+// Network proxy configuration for outbound HTTP (indexers, arrs, SABnzbd, NZBLNK).
+// Empty strings disable proxying for that scheme. Mirrors standard
+// HTTP_PROXY/HTTPS_PROXY/NO_PROXY env-var semantics. Internal endpoints
+// (RC server, self-loopback) are not affected.
+export interface NetworkConfig {
+	http_proxy: string;
+	https_proxy: string;
+	no_proxy: string;
+}
+
+// Database configuration
+export interface DatabaseConfig {
+	type: string;
+	path: string;
+	dsn: string;
+}
+
+// Metadata configuration
+export interface MetadataConfig {
+	root_path: string;
+	delete_source_nzb_on_removal?: boolean;
+	delete_completed_nzb?: boolean;
+	backup: MetadataBackupConfig;
+}
+
+export interface MetadataBackupConfig {
+	enabled?: boolean;
+	schedule: string; // cron expression (UTC)
+	keep_backups: number;
+	path: string;
+}
+
+// Failure masking configuration
+export interface FailureMaskingConfig {
+	enabled: boolean;
+	threshold: number;
+}
+
+// Streaming configuration
+export interface StreamingConfig {
+	max_prefetch: number;
+	failure_masking: FailureMaskingConfig;
+}
+
+// Segment cache configuration
+export interface SegmentCacheConfig {
+	enabled: boolean | null;
+	cache_path: string;
+	max_size_gb: number;
+	expiry_hours: number;
+}
+
+// Health configuration
+export interface HealthConfig {
+	enabled?: boolean;
+	library_dir?: string;
+	cleanup_orphaned_metadata?: boolean;
+	check_interval_seconds?: number;
+	max_connections_for_health_checks?: number;
+	max_concurrent_jobs?: number; // Max concurrent health check jobs
+	segment_sample_percentage?: number; // Percentage of segments to check (1-100)
+	max_retries?: number; // Max health check retries
+	library_sync_interval_minutes?: number; // Library sync interval in minutes (optional)
+	library_sync_concurrency?: number;
+	check_all_segments?: boolean; // Whether to check all segments or use sampling
+	resolve_repair_on_import?: boolean; // Automatically resolve pending repairs in the same directory when a new file is imported
+	verify_data?: boolean; // Verify 1 byte of data for each segment
+	read_timeout_seconds?: number; // Timeout for data verification
+	acceptable_missing_segments_percentage?: number;
+	repair: RepairConfig;
+}
+
+export interface RepairConfig {
+	enabled: boolean;
+	interval_minutes: number;
+	max_cooldown_hours: number;
+	max_repair_retries: number; // Max repair notification retries
+	exponential_backoff: boolean;
+}
+
+// Library sync types
+export interface LibrarySyncProgress {
+	total_files: number;
+	processed_files: number;
+	start_time: string;
+}
+
+export interface LibrarySyncResult {
+	files_added: number;
+	files_deleted: number;
+	metadata_deleted: number;
+	duration: string;
+	completed_at: string;
+}
+
+export interface LibrarySyncStatus {
+	is_running: boolean;
+	progress?: LibrarySyncProgress;
+	last_sync_result?: LibrarySyncResult;
+}
+
+// Dry run result for library sync
+export interface DryRunSyncResult {
+	orphaned_metadata_count: number; // Number of orphaned metadata files
+	orphaned_library_files: number; // Number of orphaned library files (symlinks/STRM)
+	database_records_to_clean: number; // Number of database records to clean
+	would_cleanup: boolean; // Whether cleanup would occur based on config
+}
+
+// RClone configuration (sanitized)
+export interface RCloneConfig {
+	// Encryption
+	password_set: boolean;
+	salt_set: boolean;
+
+	// RC (Remote Control) Configuration
+	rc_enabled: boolean;
+	rc_url: string;
+	vfs_name: string;
+	rc_port: number;
+	rc_user: string;
+	rc_pass_set: boolean;
+	rc_options: Record<string, string>;
+
+	// Mount Configuration
+	mount_enabled: boolean;
+	mount_options: Record<string, string>;
+
+	// Mount-Specific Settings
+	allow_other: boolean;
+	allow_non_empty: boolean;
+	read_only: boolean;
+	timeout: string;
+	syslog: boolean;
+
+	// System and filesystem options
+	log_level: string;
+	uid: number;
+	gid: number;
+	umask: string;
+	buffer_size: string;
+	attr_timeout: string;
+	transfers: number;
+
+	// VFS Cache Settings
+	cache_dir: string;
+	vfs_cache_mode: string;
+	vfs_cache_poll_interval: string;
+	vfs_read_chunk_size: string;
+	vfs_read_chunk_size_limit: string;
+	vfs_cache_max_size: string;
+	vfs_cache_max_age: string;
+	vfs_read_ahead: string;
+	dir_cache_time: string;
+	vfs_cache_min_free_space: string;
+	vfs_disk_space_total: string;
+	vfs_read_chunk_streams: number;
+
+	// Advanced Settings
+	no_mod_time: boolean;
+	no_checksum: boolean;
+	async_read: boolean;
+	vfs_fast_fingerprint: boolean;
+	use_mmap: boolean;
+	links: boolean;
+}
+
+// Fuse configuration
+export interface FuseConfig {
+	mount_path: string;
+	enabled: boolean;
+	allow_other: boolean;
+	debug: boolean;
+	attr_timeout_seconds: number;
+	entry_timeout_seconds: number;
+	max_cache_size_mb: number;
+	max_read_ahead_mb: number;
+}
+
+// Import strategy type
+export type ImportStrategy = "NONE" | "SYMLINK" | "STRM";
+
+// Import configuration
+export interface ImportConfig {
+	max_processor_workers: number;
+	queue_processing_interval_seconds: number; // Interval in seconds for queue processing
+	allowed_file_extensions: string[];
+	max_import_connections: number;
+	max_download_prefetch: number;
+	segment_sample_percentage: number; // Percentage of segments to check (1-100)
+	read_timeout_seconds: number;
+	import_strategy: ImportStrategy;
+	import_dir?: string | null;
+	watch_dir?: string | null;
+	watch_interval_seconds?: number | null;
+	allow_nested_rar_extraction?: boolean;
+	rename_to_nzb_name?: boolean;
+	filter_sample_files?: boolean;
+	failed_item_retention_hours?: number | null;
+	history_retention_days?: number | null;
+	delete_completed_nzb?: boolean;
+}
+
+// Log configuration
+export interface LogConfig {
+	file: string;
+	level: string;
+	max_size: number;
+	max_age: number;
+	max_backups: number;
+	compress: boolean;
+}
+
+// NNTP Provider configuration (sanitized)
+export interface ProviderConfig {
+	id: string;
+	host: string;
+	port: number;
+	username: string;
+	max_connections: number;
+	inflight_requests: number;
+	tls: boolean;
+	insecure_tls: boolean;
+	proxy_url?: string;
+	password_set: boolean;
+	enabled: boolean;
+	is_backup_provider: boolean;
+	skip_ping?: boolean;
+	keepalive_interval_seconds?: number;
+	keepalive_command?: string;
+	user_agent?: string;
+	quota_bytes?: number;
+	quota_period_hours?: number;
+	last_rtt_ms?: number;
+	last_speed_test_mbps?: number;
+	last_speed_test_time?: string;
+}
+
+// NZBLNK resolver configuration
+export interface NzblnkConfig {
+	user_agent?: string;
+}
+
+// SABnzbd configuration
+export interface SABnzbdConfig {
+	enabled: boolean;
+	complete_dir: string;
+	download_client_base_url?: string;
+	categories: SABnzbdCategory[];
+	history_retention_minutes: number;
+	fallback_host?: string;
+	fallback_api_key?: string; // Obfuscated when returned from API
+	fallback_api_key_set?: boolean; // For display purposes only
+}
+
+// SABnzbd category configuration
+export interface SABnzbdCategory {
+	name: string;
+	order: number;
+	priority: number;
+	dir: string;
+}
+
+// Configuration update request types
+export interface ConfigUpdateRequest {
+	webdav?: WebDAVUpdateRequest;
+	api?: APIUpdateRequest;
+	auth?: AuthUpdateRequest;
+	database?: DatabaseUpdateRequest;
+	metadata?: MetadataUpdateRequest;
+	streaming?: StreamingUpdateRequest;
+	segment_cache?: Partial<SegmentCacheConfig>;
+	health?: HealthUpdateRequest;
+	rclone?: RCloneUpdateRequest;
+	fuse?: Partial<FuseConfig>;
+	import?: ImportUpdateRequest;
+	log?: LogUpdateRequest;
+	sabnzbd?: SABnzbdUpdateRequest;
+	arrs?: ArrsConfig;
+	stremio?: Partial<StremioConfig>;
+	providers?: ProviderUpdateRequest[];
+	nzblnk?: NzblnkConfig;
+	network?: NetworkConfig;
+	mount_path?: string;
+	mount_type?: MountType;
+	profiler_enabled?: boolean;
+}
+
+// WebDAV update request
+export interface WebDAVUpdateRequest {
+	port?: number;
+	user?: string;
+	password?: string;
+	host?: string;
+	debug?: boolean;
+}
+
+// API update request
+export interface APIUpdateRequest {
+	prefix?: string;
+}
+
+// Auth update request
+export interface AuthUpdateRequest {
+	login_required?: boolean;
+}
+
+// Database update request
+export interface DatabaseUpdateRequest {
+	type?: string;
+	path?: string;
+	dsn?: string;
+}
+
+// Metadata update request
+export interface MetadataUpdateRequest {
+	root_path?: string;
+	delete_source_nzb_on_removal?: boolean;
+	backup?: MetadataBackupConfig;
+}
+
+// Streaming update request
+export interface StreamingUpdateRequest {
+	max_prefetch?: number;
+	failure_masking?: Partial<FailureMaskingConfig>;
+}
+
+// Health update request
+export interface HealthUpdateRequest {
+	enabled?: boolean;
+	library_dir?: string;
+	cleanup_orphaned_metadata?: boolean;
+	check_interval_seconds?: number; // Interval in seconds (optional)
+	max_connections_for_health_checks?: number;
+	max_concurrent_jobs?: number; // Max concurrent health check jobs
+	segment_sample_percentage?: number; // Percentage of segments to check (1-100)
+	max_retries?: number;
+	read_timeout_seconds?: number;
+	library_sync_interval_minutes?: number; // Library sync interval in minutes (optional)
+	library_sync_concurrency?: number;
+	check_all_segments?: boolean; // Whether to check all segments or use sampling
+	resolve_repair_on_import?: boolean;
+	verify_data?: boolean;
+	acceptable_missing_segments_percentage?: number;
+	repair?: Partial<RepairConfig>;
+}
+
+// RClone update request
+export interface RCloneUpdateRequest {
+	password?: string;
+	salt?: string;
+	rc_enabled?: boolean;
+	rc_url?: string;
+	vfs_name?: string;
+	rc_port?: number;
+	rc_user?: string;
+	rc_pass?: string;
+	rc_options?: Record<string, string>;
+	mount_enabled?: boolean;
+	mount_options?: Record<string, string>;
+
+	// Mount-Specific Settings
+	allow_other?: boolean;
+	allow_non_empty?: boolean;
+	read_only?: boolean;
+	timeout?: string;
+	syslog?: boolean;
+
+	// System and filesystem options
+	log_level?: string;
+	uid?: number;
+	gid?: number;
+	umask?: string;
+	buffer_size?: string;
+	attr_timeout?: string;
+	transfers?: number;
+
+	// VFS Cache Settings
+	cache_dir?: string;
+	vfs_cache_mode?: string;
+	vfs_cache_poll_interval?: string;
+	vfs_cache_max_size?: string;
+	vfs_cache_max_age?: string;
+	vfs_read_chunk_size?: string;
+	vfs_read_chunk_size_limit?: string;
+	vfs_read_ahead?: string;
+	dir_cache_time?: string;
+	vfs_cache_min_free_space?: string;
+	vfs_disk_space_total?: string;
+	vfs_read_chunk_streams?: number;
+
+	// Advanced Settings
+	no_mod_time?: boolean;
+	no_checksum?: boolean;
+	async_read?: boolean;
+	vfs_fast_fingerprint?: boolean;
+	use_mmap?: boolean;
+	links?: boolean;
+}
+
+// Import update request
+export interface ImportUpdateRequest {
+	max_processor_workers?: number;
+	queue_processing_interval_seconds?: number; // Interval in seconds for queue processing
+	allowed_file_extensions?: string[];
+	import_strategy?: ImportStrategy;
+	import_dir?: string | null;
+	watch_dir?: string | null;
+	watch_interval_seconds?: number | null;
+	allow_nested_rar_extraction?: boolean;
+	rename_to_nzb_name?: boolean;
+	filter_sample_files?: boolean;
+}
+
+// Log update request
+export interface LogUpdateRequest {
+	file?: string;
+	level?: string;
+	max_size?: number;
+	max_age?: number;
+	max_backups?: number;
+	compress?: boolean;
+}
+
+// Provider update request
+export interface ProviderUpdateRequest {
+	name?: string;
+	host?: string;
+	port?: number;
+	username?: string;
+	password?: string;
+	max_connections?: number;
+	inflight_requests?: number;
+	tls?: boolean;
+	insecure_tls?: boolean;
+	proxy_url?: string;
+	enabled?: boolean;
+	is_backup_provider?: boolean;
+	skip_ping?: boolean;
+	keepalive_interval_seconds?: number;
+	keepalive_command?: string;
+	user_agent?: string;
+	quota_bytes?: number;
+	quota_period_hours?: number;
+}
+
+// SABnzbd update request
+export interface SABnzbdUpdateRequest {
+	enabled?: boolean;
+	complete_dir?: string;
+	categories?: SABnzbdCategory[];
+	history_retention_minutes?: number;
+	fallback_host?: string;
+	fallback_api_key?: string;
+}
+
+// Configuration section names for PATCH requests
+export type ConfigSection =
+	| "webdav"
+	| "auth"
+	| "metadata"
+	| "streaming"
+	| "segment_cache"
+	| "health"
+	| "import"
+	| "providers"
+	| "mount"
+	| "rclone"
+	| "fuse"
+	| "sabnzbd"
+	| "arrs"
+	| "stremio"
+	| "nzblnk"
+	| "network"
+	| "system";
+
+// Form data interfaces for UI components
+export interface WebDAVFormData {
+	port: number;
+	user: string;
+	password: string;
+	host?: string;
+}
+
+export interface ImportFormData {
+	max_processor_workers: number;
+	queue_processing_interval_seconds: number; // Interval in seconds for queue processing
+	max_download_prefetch: number;
+	read_timeout_seconds: number;
+	import_strategy: ImportStrategy;
+	import_dir: string;
+	watch_dir?: string;
+	watch_interval_seconds?: number;
+}
+
+export interface MetadataFormData {
+	root_path: string;
+	delete_source_nzb_on_removal?: boolean;
+	backup: MetadataBackupConfig;
+}
+
+export interface StreamingFormData {
+	max_prefetch: number;
+	failure_masking: FailureMaskingConfig;
+}
+
+export interface RCloneFormData {
+	password: string;
+	rc_enabled: boolean;
+	rc_url: string;
+	vfs_name: string;
+	rc_port: number;
+	rc_user: string;
+	rc_pass: string;
+	rc_options: Record<string, string>;
+	mount_enabled: boolean;
+	mount_options: Record<string, string>;
+
+	// Mount-Specific Settings
+	allow_other: boolean;
+	allow_non_empty: boolean;
+	read_only: boolean;
+	timeout: string;
+	syslog: boolean;
+
+	// System and filesystem options
+	log_level: string;
+	uid: number;
+	gid: number;
+	umask: string;
+	buffer_size: string;
+	attr_timeout: string;
+	transfers: number;
+
+	// VFS Cache Settings
+	cache_dir: string;
+	vfs_cache_mode: string;
+	vfs_cache_poll_interval: string;
+	vfs_read_chunk_size: string;
+	vfs_read_chunk_size_limit: string;
+	vfs_cache_max_size: string;
+	vfs_cache_max_age: string;
+	vfs_read_ahead: string;
+	dir_cache_time: string;
+	vfs_cache_min_free_space: string;
+	vfs_disk_space_total: string;
+	vfs_read_chunk_streams: number;
+
+	// Advanced Settings
+	no_mod_time: boolean;
+	no_checksum: boolean;
+	async_read: boolean;
+	vfs_fast_fingerprint: boolean;
+	use_mmap: boolean;
+	links: boolean;
+}
+
+export interface RCloneRCFormData {
+	rc_enabled: boolean;
+	rc_url: string;
+	vfs_name: string;
+	rc_port: number;
+	rc_user: string;
+	rc_pass: string;
+	rc_options: Record<string, string>;
+}
+
+export interface RCloneMountFormData {
+	mount_enabled: boolean;
+	mount_options: Record<string, string>;
+
+	// Mount-Specific Settings
+	allow_other: boolean;
+	allow_non_empty: boolean;
+	read_only: boolean;
+	timeout: string;
+	syslog: boolean;
+
+	// System and filesystem options
+	log_level: string;
+	uid: number;
+	gid: number;
+	umask: string;
+	buffer_size: string;
+	attr_timeout: string;
+	transfers: number;
+
+	// VFS Cache Settings
+	cache_dir: string;
+	vfs_cache_mode: string;
+	vfs_cache_poll_interval: string;
+	vfs_read_chunk_size: string;
+	vfs_read_chunk_size_limit: string;
+	vfs_cache_max_size: string;
+	vfs_cache_max_age: string;
+	vfs_read_ahead: string;
+	dir_cache_time: string;
+	vfs_cache_min_free_space: string;
+	vfs_disk_space_total: string;
+	vfs_read_chunk_streams: number;
+
+	// Advanced Settings
+	no_mod_time: boolean;
+	no_checksum: boolean;
+	async_read: boolean;
+	vfs_fast_fingerprint: boolean;
+	use_mmap: boolean;
+	links: boolean;
+}
+
+export interface MountStatus {
+	mounted: boolean;
+	mount_point: string;
+	error?: string;
+	started_at?: string;
+}
+
+export interface ProviderFormData {
+	host: string;
+	port: number;
+	username: string;
+	password: string;
+	max_connections: number;
+	inflight_requests: number;
+	tls: boolean;
+	insecure_tls: boolean;
+	proxy_url: string;
+	enabled: boolean;
+	is_backup_provider: boolean;
+	skip_ping: boolean;
+	keepalive_interval_seconds: number;
+	keepalive_command: string;
+	user_agent: string;
+	quota_bytes: number;
+	quota_period_hours: number;
+}
+
+export interface LogFormData {
+	file: string;
+	level: string;
+	max_size: number;
+	max_age: number;
+	max_backups: number;
+	compress: boolean;
+}
+
+export interface SABnzbdFormData {
+	enabled: boolean;
+	complete_dir: string;
+	categories: SABnzbdCategory[];
+	history_retention_minutes: number;
+	fallback_host: string;
+	fallback_api_key: string;
+}
+
+// Arrs configuration types
+export type ArrsType = "radarr" | "sonarr" | "lidarr" | "readarr" | "whisparr";
+
+// Sync status types
+export type SyncStatus = "idle" | "running" | "cancelling" | "completed" | "failed";
+
+export interface ArrsInstanceConfig {
+	name: string;
+	url: string;
+	api_key: string;
+	category?: string;
+	enabled: boolean;
+	sync_interval_hours: number;
+}
+
+// Database-backed arrs instance (includes real ID from database)
+export interface ArrsInstance {
+	id: number;
+	name: string;
+	type: ArrsType;
+	url: string;
+	api_key: string;
+	category?: string;
+	enabled: boolean;
+	sync_interval_hours: number;
+	last_sync_at?: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface IgnoredMessage {
+	message: string;
+	enabled: boolean;
+}
+
+export interface ArrsConfig {
+	enabled: boolean;
+	max_workers: number;
+	webhook_base_url?: string;
+	radarr_instances: ArrsInstanceConfig[];
+	sonarr_instances: ArrsInstanceConfig[];
+	lidarr_instances: ArrsInstanceConfig[];
+	readarr_instances: ArrsInstanceConfig[];
+	whisparr_instances: ArrsInstanceConfig[];
+	queue_cleanup_enabled?: boolean;
+	queue_cleanup_interval_seconds?: number;
+	queue_cleanup_grace_period_minutes?: number;
+	queue_cleanup_allowlist?: IgnoredMessage[];
+	cleanup_automatic_import_failure?: boolean;
+}
+
+// Sync status and progress types
+export interface SyncProgress {
+	instance_id: number;
+	status: SyncStatus;
+	started_at: string;
+	processed_count: number;
+	error_count: number;
+	total_items?: number;
+	current_batch: string;
+}
+
+export interface SyncResult {
+	instance_id: number;
+	status: SyncStatus;
+	started_at: string;
+	completed_at: string;
+	processed_count: number;
+	error_count: number;
+	error_message?: string;
+}
+
+export interface ArrsFormData {
+	enabled: boolean;
+	max_workers: number;
+	webhook_base_url?: string;
+	radarr_instances: ArrsInstanceConfig[];
+	sonarr_instances: ArrsInstanceConfig[];
+	lidarr_instances: ArrsInstanceConfig[];
+	readarr_instances: ArrsInstanceConfig[];
+	whisparr_instances: ArrsInstanceConfig[];
+	queue_cleanup_enabled?: boolean;
+	queue_cleanup_interval_seconds?: number;
+	queue_cleanup_grace_period_minutes?: number;
+	cleanup_automatic_import_failure?: boolean;
+}
+
+// Prowlarr indexer configuration (nested inside StremioConfig)
+export interface ProwlarrConfig {
+	enabled: boolean;
+	host: string;
+	api_key: string;
+	categories: number[];
+	languages: string[];
+	qualities: string[];
+}
+
+// Stremio integration configuration
+export interface StremioConfig {
+	enabled: boolean;
+	nzb_ttl_hours: number;
+	base_url?: string;
+	prowlarr: ProwlarrConfig;
+}
+
+// Helper type for configuration sections
+export interface ConfigSectionInfo {
+	title: string;
+	description: string;
+	icon: string;
+	canEdit: boolean;
+	hidden?: boolean;
+}
+
+// Configuration sections metadata
+// Provider management types
+export interface ProviderTestRequest {
+	provider_id?: string;
+	host: string;
+	port: number;
+	username: string;
+	password: string;
+	tls: boolean;
+	insecure_tls: boolean;
+	proxy_url?: string;
+	skip_ping?: boolean;
+}
+
+export interface ProviderTestResponse {
+	success: boolean;
+	error_message?: string;
+	rtt_ms?: number;
+}
+
+export interface ProviderCreateRequest {
+	host: string;
+	port: number;
+	username: string;
+	password: string;
+	max_connections: number;
+	inflight_requests?: number;
+	tls: boolean;
+	insecure_tls: boolean;
+	proxy_url?: string;
+	enabled: boolean;
+	is_backup_provider: boolean;
+	skip_ping?: boolean;
+	keepalive_interval_seconds?: number;
+	keepalive_command?: string;
+	user_agent?: string;
+	quota_bytes?: number;
+	quota_period_hours?: number;
+}
+
+export interface ProviderReorderRequest {
+	provider_ids: string[];
+}
+
+export const CONFIG_SECTIONS: Record<ConfigSection | "system", ConfigSectionInfo> = {
+	webdav: {
+		title: "WebDAV Server",
+		description: "WebDAV server settings for file access",
+		icon: "Globe",
+		canEdit: true,
+	},
+	auth: {
+		title: "Authentication",
+		description: "User authentication and login settings",
+		icon: "Shield",
+		canEdit: true,
+	},
+	mount: {
+		title: "Mount",
+		description: "Configure filesystem mount (RClone or native FUSE)",
+		icon: "HardDrive",
+		canEdit: true,
+	},
+	metadata: {
+		title: "Metadata",
+		description: "File metadata storage settings",
+		icon: "Folder",
+		canEdit: true,
+	},
+	streaming: {
+		title: "Streaming & Downloads",
+		description: "File streaming, chunking and download worker configuration",
+		icon: "Download",
+		canEdit: true,
+	},
+	segment_cache: {
+		title: "Segment Cache",
+		description: "Segment-aligned disk cache shared by FUSE and WebDAV for faster media playback",
+		icon: "HardDrive",
+		canEdit: true,
+		hidden: true,
+	},
+	health: {
+		title: "Health Monitoring",
+		description: "File health monitoring and automatic repair settings",
+		icon: "Shield",
+		canEdit: true,
+	},
+	import: {
+		title: "Import Processing",
+		description: "NZB import and processing worker configuration",
+		icon: "Cog",
+		canEdit: true,
+	},
+	providers: {
+		title: "NNTP Providers",
+		description: "Usenet provider configuration for downloads",
+		icon: "Radio",
+		canEdit: true,
+	},
+	rclone: {
+		title: "RClone",
+		description: "RClone configuration",
+		icon: "HardDrive",
+		canEdit: true,
+		hidden: true,
+	},
+	fuse: {
+		title: "FUSE",
+		description: "Native FUSE configuration",
+		icon: "HardDrive",
+		canEdit: true,
+		hidden: true,
+	},
+	sabnzbd: {
+		title: "SABnzbd API",
+		description: "SABnzbd-compatible API configuration for download clients",
+		icon: "Download",
+		canEdit: true,
+	},
+	arrs: {
+		title: "ARR Management",
+		description:
+			"Configure Radarr, Sonarr, Lidarr, Readarr, and Whisparr instances for media file synchronization and automatic repair.",
+		icon: "Cog",
+		canEdit: true,
+	},
+	stremio: {
+		title: "Stremio",
+		description: "Stremio NZB stream endpoint — upload an NZB and receive instant stream URLs",
+		icon: "Tv",
+		canEdit: true,
+	},
+	nzblnk: {
+		title: "NZBLNK",
+		description: "Settings for resolving nzblnk:// links via public NZB indexers",
+		icon: "Link",
+		canEdit: true,
+	},
+	network: {
+		title: "Network & Proxy",
+		description:
+			"HTTP/HTTPS proxy for outbound indexer, Arrs, NZB grab, and SABnzbd fallback traffic",
+		icon: "Globe",
+		canEdit: true,
+	},
+	system: {
+		title: "System",
+		description: "System settings",
+		icon: "HardDrive",
+		canEdit: true,
+	},
+};

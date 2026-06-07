@@ -1,0 +1,181 @@
+package postprocessor
+
+import (
+	"context"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/javi11/altmount/internal/config"
+	"github.com/javi11/altmount/internal/database"
+)
+
+// CreateSymlinks creates symlinks for an imported item based on the import strategy
+func (c *Coordinator) CreateSymlinks(ctx context.Context, item *database.ImportQueueItem, resultingPath string) error {
+	cfg := c.configGetter()
+
+	// If a forced target path is set, create the symlink at that exact location
+	// regardless of the configured import strategy.
+	if item.TargetPath != nil && *item.TargetPath != "" {
+		actualPath := filepath.Join(cfg.MountPath, strings.TrimPrefix(resultingPath, "/"))
+		return c.createAbsoluteSymlink(actualPath, *item.TargetPath)
+	}
+
+	// Check if symlinks are enabled
+	if cfg.Import.ImportStrategy != config.ImportStrategySYMLINK {
+		return nil // Skip if not enabled
+	}
+
+	if cfg.Import.ImportDir == nil || *cfg.Import.ImportDir == "" {
+		return fmt.Errorf("symlink directory not configured")
+	}
+
+	// Keep the original resulting path for metadata and actual mount path lookups
+	originalResultingPath := resultingPath
+
+	category := ""
+	if item.Category != nil {
+		category = *item.Category
+	}
+
+	// Build the clean, isolated library path: [CompleteDir]/[Category]/<remainder>,
+	// stripping any of those prefixes that are already present in the source path.
+	resultingPath = buildLibraryRelPath(resultingPath, cfg.SABnzbd.CompleteDir, category)
+
+	// Get the actual metadata/mount path (where the content actually lives)
+	actualPath := filepath.Join(cfg.MountPath, strings.TrimPrefix(originalResultingPath, "/"))
+
+	// Check the metadata directory to determine if this is a file or directory
+	metadataPath := filepath.Join(cfg.Metadata.RootPath, strings.TrimPrefix(originalResultingPath, "/"))
+	fileInfo, err := os.Stat(metadataPath)
+
+	// If stat fails, check if it's a .meta file (single file case)
+	if err != nil {
+		metaFile := metadataPath + ".meta"
+		if _, metaErr := os.Stat(metaFile); metaErr == nil {
+			return c.createSingleSymlink(actualPath, resultingPath)
+		}
+		return fmt.Errorf("failed to stat metadata path: %w", err)
+	}
+
+	if !fileInfo.IsDir() {
+		return c.createSingleSymlink(actualPath, resultingPath)
+	}
+
+	// Directory - walk through and create symlinks for all files
+	var symlinkErrors []error
+	symlinkCount := 0
+
+	err = filepath.WalkDir(metadataPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			c.log.WarnContext(ctx, "Error accessing metadata path during symlink creation",
+				"path", path,
+				"error", err)
+			return nil // Continue walking
+		}
+
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".meta") {
+			return nil
+		}
+
+		// Calculate relative path from the root metadata directory
+		relPath, err := filepath.Rel(cfg.Metadata.RootPath, path)
+		if err != nil {
+			c.log.ErrorContext(ctx, "Failed to calculate relative path",
+				"path", path,
+				"base", cfg.Metadata.RootPath,
+				"error", err)
+			return nil
+		}
+
+		// Remove .meta extension
+		relPath = strings.TrimSuffix(relPath, ".meta")
+
+		// Build the actual file path in the mount
+		actualFilePath := filepath.Join(cfg.MountPath, strings.TrimPrefix(relPath, "/"))
+
+		category := ""
+		if item.Category != nil {
+			category = *item.Category
+		}
+
+		// filepath.Rel returns OS-native separators (backslashes on Windows);
+		// buildLibraryRelPath normalises them before stripping so we don't
+		// double-prefix the category/CompleteDir on Windows (issue #585).
+		symlinkResultingPath := buildLibraryRelPath(relPath, cfg.SABnzbd.CompleteDir, category)
+
+		if err := c.createSingleSymlink(actualFilePath, symlinkResultingPath); err != nil {
+			c.log.ErrorContext(ctx, "Failed to create symlink",
+				"path", actualFilePath,
+				"error", err)
+			symlinkErrors = append(symlinkErrors, err)
+			return nil
+		}
+
+		symlinkCount++
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to walk directory: %w", err)
+	}
+
+	if len(symlinkErrors) > 0 {
+		c.log.WarnContext(ctx, "Some symlinks failed to create",
+			"queue_id", item.ID,
+			"total_errors", len(symlinkErrors),
+			"successful", symlinkCount)
+	}
+
+	return nil
+}
+
+// createAbsoluteSymlink creates a symlink at an exact absolute destination path.
+// It creates any missing parent directories and removes an existing symlink at destPath.
+func (c *Coordinator) createAbsoluteSymlink(actualPath, destPath string) error {
+	if err := os.MkdirAll(filepath.Dir(destPath), 0775); err != nil {
+		return fmt.Errorf("failed to create parent directory for target symlink: %w", err)
+	}
+
+	// Remove existing symlink if present
+	if _, err := os.Lstat(destPath); err == nil {
+		if err := os.Remove(destPath); err != nil {
+			return fmt.Errorf("failed to remove existing file at target path: %w", err)
+		}
+	}
+
+	if err := os.Symlink(actualPath, destPath); err != nil {
+		return fmt.Errorf("failed to create symlink at target path: %w", err)
+	}
+
+	return nil
+}
+
+// createSingleSymlink creates a symlink for a single file
+func (c *Coordinator) createSingleSymlink(actualPath, resultingPath string) error {
+	cfg := c.configGetter()
+
+	baseDir := filepath.Join(*cfg.Import.ImportDir, filepath.Dir(strings.TrimPrefix(resultingPath, "/")))
+
+	if err := os.MkdirAll(baseDir, 0775); err != nil {
+		return fmt.Errorf("failed to create symlink category directory: %w", err)
+	}
+
+	symlinkPath := filepath.Join(*cfg.Import.ImportDir, strings.TrimPrefix(resultingPath, "/"))
+
+	// Remove existing symlink if present
+	if _, err := os.Lstat(symlinkPath); err == nil {
+		if err := os.Remove(symlinkPath); err != nil {
+			return fmt.Errorf("failed to remove existing symlink: %w", err)
+		}
+	}
+
+	// Create the symlink using the absolute actual path
+	if err := os.Symlink(actualPath, symlinkPath); err != nil {
+		return fmt.Errorf("failed to create symlink: %w", err)
+	}
+
+	return nil
+}
