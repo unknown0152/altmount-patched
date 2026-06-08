@@ -10,6 +10,10 @@ services:
       - PORT=8080
       - JWT_SECRET=change-me-to-a-strong-random-secret # Required when login is enabled (auth.login_required: true)
       - COOKIE_DOMAIN=localhost # Must match the domain/IP where web interface is accessed
+      - ALTMOUNT_MOUNT_PATH=/mnt/altmount
+      - ALTMOUNT_SABNZBD_COMPLETE_DIR=/mnt/altmount/complete
+      - ALTMOUNT_ENABLE_SABNZBD=true
+      - ALTMOUNT_ENABLE_ARRS=true
     volumes:
       - ./config:/config
       - /mnt:/mnt:rshared

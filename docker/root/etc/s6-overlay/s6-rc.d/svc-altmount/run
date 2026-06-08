@@ -1,3 +1,18 @@
 #!/usr/bin/with-contenv bash
 
+set -e
+
+mount_path="${ALTMOUNT_MOUNT_PATH:-/mnt/altmount}"
+complete_dir="${ALTMOUNT_SABNZBD_COMPLETE_DIR:-${mount_path}/complete}"
+
+case "${mount_path}" in
+  ""|"/")
+    echo "Refusing unsafe ALTMOUNT_MOUNT_PATH='${mount_path}'" >&2
+    exit 1
+    ;;
+esac
+
+mkdir -p "${complete_dir}/movies" "${complete_dir}/tv"
+chown -R abc:abc "${mount_path}" 2>/dev/null || true
+
 exec s6-setuidgid abc /app/altmount serve --config=/config/config.yaml

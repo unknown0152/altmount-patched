@@ -213,12 +213,13 @@ func (s *Server) SetupRoutes(app *fiber.App) {
 		// Explicit config overrides the env-derived value
 		corsOrigins = strings.Join(cfg.API.AllowedOrigins, ",")
 	}
+	allowCredentials := corsOrigins != "*"
 
 	api.Use(cors.New(cors.Config{
 		AllowOrigins:     corsOrigins,
 		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
 		AllowMethods:     "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-		AllowCredentials: true,
+		AllowCredentials: allowCredentials,
 	}))
 	api.Use(recover.New())
 
