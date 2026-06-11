@@ -1276,7 +1276,7 @@ func DefaultConfig(configDir ...string) *Config {
 	historyRetentionDays := 90     // Default: auto-remove import history after 90 days (3 months)
 	cleanupAutomaticImportFailure := false
 	metadataBackupEnabled := false
-	failureMaskingEnabled := false
+	failureMaskingEnabled := true
 	repairEnabled := true
 	repairExponentialBackoff := true
 
@@ -1405,16 +1405,18 @@ func DefaultConfig(configDir ...string) *Config {
 				".xvid", ".rm", ".rmvb", ".asf", ".asx", ".wtv", ".mk3d", ".dvr-ms",
 				".mp3", ".flac", ".m4a", ".epub", ".pdf", ".cbz",
 			},
-			MaxImportConnections:     5,                  // Default: 5 concurrent NNTP connections for validation and archive processing
-			MaxDownloadPrefetch:      10,                 // Default: 10 segments prefetched ahead for archive analysis
-			SegmentSamplePercentage:  1,                  // Default: 1% segment sampling
-			ReadTimeoutSeconds:       300,                // Default: 5 minutes read timeout
-			ImportStrategy:           ImportStrategyNone, // Default: no import strategy (direct import)
-			ImportDir:                nil,                // No default import directory
-			WatchDir:                 nil,
-			WatchIntervalSeconds:     &watchIntervalSeconds,
-			FailedItemRetentionHours: &failedItemRetentionHours,
-			HistoryRetentionDays:     &historyRetentionDays,
+			MaxImportConnections:               5,                  // Default: 5 concurrent NNTP connections for validation and archive processing
+			MaxConcurrentImports:               2,                  // Keep background imports bounded so playback stays responsive
+			MaxConcurrentImportsWhileStreaming: 1,                  // Leave NNTP/CPU headroom for Plex playback
+			MaxDownloadPrefetch:                10,                 // Default: 10 segments prefetched ahead for archive analysis
+			SegmentSamplePercentage:            1,                  // Default: 1% segment sampling
+			ReadTimeoutSeconds:                 300,                // Default: 5 minutes read timeout
+			ImportStrategy:                     ImportStrategyNone, // Default: no import strategy (direct import)
+			ImportDir:                          nil,                // No default import directory
+			WatchDir:                           nil,
+			WatchIntervalSeconds:               &watchIntervalSeconds,
+			FailedItemRetentionHours:           &failedItemRetentionHours,
+			HistoryRetentionDays:               &historyRetentionDays,
 		},
 		Log: LogConfig{
 			File:       logPath, // Default log file path
@@ -1526,8 +1528,8 @@ func DefaultConfig(configDir ...string) *Config {
 		SegmentCache: SegmentCacheConfig{
 			Enabled:     &segmentCacheEnabled,
 			CachePath:   segmentCachePath,
-			MaxSizeGB:   50,
-			ExpiryHours: 168,
+			MaxSizeGB:   150,
+			ExpiryHours: 72,
 		},
 		MountPath: "",            // Empty by default - required when ARRs is enabled
 		MountType: MountTypeNone, // No mount system active by default
@@ -1633,6 +1635,26 @@ func applyDockerEnvOverrides(config *Config) error {
 		return err
 	} else if ok {
 		config.Arrs.Enabled = &enabled
+	}
+	if enabled, ok, err := envBool("ALTMOUNT_STREAMING_FAILURE_MASKING_ENABLED"); err != nil {
+		return err
+	} else if ok {
+		config.Streaming.FailureMasking.Enabled = &enabled
+	}
+	if threshold, ok, err := envInt("ALTMOUNT_STREAMING_FAILURE_MASKING_THRESHOLD"); err != nil {
+		return err
+	} else if ok {
+		config.Streaming.FailureMasking.Threshold = threshold
+	}
+	if maxImports, ok, err := envInt("ALTMOUNT_IMPORT_MAX_CONCURRENT_IMPORTS"); err != nil {
+		return err
+	} else if ok {
+		config.Import.MaxConcurrentImports = maxImports
+	}
+	if maxImports, ok, err := envInt("ALTMOUNT_IMPORT_MAX_CONCURRENT_IMPORTS_WHILE_STREAMING"); err != nil {
+		return err
+	} else if ok {
+		config.Import.MaxConcurrentImportsWhileStreaming = maxImports
 	}
 	if enabled, ok, err := envBool("ALTMOUNT_ENABLE_HEALTH"); err != nil {
 		return err
