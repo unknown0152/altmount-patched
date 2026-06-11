@@ -1273,12 +1273,17 @@ func DefaultConfig(configDir ...string) *Config {
 	prowlarrEnabled := false       // Prowlarr integration disabled by default
 	watchIntervalSeconds := 10     // Default watch interval
 	failedItemRetentionHours := 24 // Default: auto-remove failed items after 24 hours
-	historyRetentionDays := 90     // Default: auto-remove import history after 90 days (3 months)
+	historyRetentionDays := 30     // Default: auto-remove import history after 30 days
 	cleanupAutomaticImportFailure := false
 	metadataBackupEnabled := false
 	failureMaskingEnabled := true
 	repairEnabled := true
 	repairExponentialBackoff := true
+	allowNestedRarExtraction := true
+	expandBlurayIso := true
+	renameToNzbName := true
+	filterSampleFiles := true
+	deleteCompletedNzb := false
 
 	// Set paths based on whether we're running in Docker or have a specific config directory
 	var dbPath, metadataPath, logPath, rclonePath, cachePath, segmentCachePath, backupPath string
@@ -1400,10 +1405,9 @@ func DefaultConfig(configDir ...string) *Config {
 		Import: ImportConfig{
 			MaxProcessorWorkers:            2, // Default: 2 processor workers
 			QueueProcessingIntervalSeconds: 5, // Default: check for work every 5 seconds
-			AllowedFileExtensions: []string{ // Default: common media extensions
+			AllowedFileExtensions: []string{ // Danish edition only imports video files for Radarr/Sonarr.
 				".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv", ".mpg", ".mpeg",
 				".xvid", ".rm", ".rmvb", ".asf", ".asx", ".wtv", ".mk3d", ".dvr-ms",
-				".mp3", ".flac", ".m4a", ".epub", ".pdf", ".cbz",
 			},
 			MaxImportConnections:               5,                  // Default: 5 concurrent NNTP connections for validation and archive processing
 			MaxConcurrentImports:               2,                  // Keep background imports bounded so playback stays responsive
@@ -1415,8 +1419,13 @@ func DefaultConfig(configDir ...string) *Config {
 			ImportDir:                          nil,                // No default import directory
 			WatchDir:                           nil,
 			WatchIntervalSeconds:               &watchIntervalSeconds,
+			AllowNestedRarExtraction:           &allowNestedRarExtraction,
+			ExpandBlurayIso:                    &expandBlurayIso,
+			RenameToNzbName:                    &renameToNzbName,
+			FilterSampleFiles:                  &filterSampleFiles,
 			FailedItemRetentionHours:           &failedItemRetentionHours,
 			HistoryRetentionDays:               &historyRetentionDays,
+			DeleteCompletedNzb:                 &deleteCompletedNzb,
 		},
 		Log: LogConfig{
 			File:       logPath, // Default log file path
@@ -1655,6 +1664,44 @@ func applyDockerEnvOverrides(config *Config) error {
 		return err
 	} else if ok {
 		config.Import.MaxConcurrentImportsWhileStreaming = maxImports
+	}
+	if extensions := splitEnvList("ALTMOUNT_IMPORT_ALLOWED_FILE_EXTENSIONS"); len(extensions) > 0 {
+		config.Import.AllowedFileExtensions = extensions
+	}
+	if enabled, ok, err := envBool("ALTMOUNT_IMPORT_ALLOW_NESTED_RAR_EXTRACTION"); err != nil {
+		return err
+	} else if ok {
+		config.Import.AllowNestedRarExtraction = &enabled
+	}
+	if enabled, ok, err := envBool("ALTMOUNT_IMPORT_EXPAND_BLURAY_ISO"); err != nil {
+		return err
+	} else if ok {
+		config.Import.ExpandBlurayIso = &enabled
+	}
+	if enabled, ok, err := envBool("ALTMOUNT_IMPORT_RENAME_TO_NZB_NAME"); err != nil {
+		return err
+	} else if ok {
+		config.Import.RenameToNzbName = &enabled
+	}
+	if enabled, ok, err := envBool("ALTMOUNT_IMPORT_FILTER_SAMPLE_FILES"); err != nil {
+		return err
+	} else if ok {
+		config.Import.FilterSampleFiles = &enabled
+	}
+	if hours, ok, err := envInt("ALTMOUNT_IMPORT_FAILED_ITEM_RETENTION_HOURS"); err != nil {
+		return err
+	} else if ok {
+		config.Import.FailedItemRetentionHours = &hours
+	}
+	if days, ok, err := envInt("ALTMOUNT_IMPORT_HISTORY_RETENTION_DAYS"); err != nil {
+		return err
+	} else if ok {
+		config.Import.HistoryRetentionDays = &days
+	}
+	if enabled, ok, err := envBool("ALTMOUNT_IMPORT_DELETE_COMPLETED_NZB"); err != nil {
+		return err
+	} else if ok {
+		config.Import.DeleteCompletedNzb = &enabled
 	}
 	if enabled, ok, err := envBool("ALTMOUNT_ENABLE_HEALTH"); err != nil {
 		return err
