@@ -226,12 +226,28 @@ func TestConfig_GetDownloadClientBaseURL(t *testing.T) {
 }
 
 func TestDefaultConfig_DanishEditionSABnzbdReady(t *testing.T) {
-	cfg := DefaultConfig()
+	cfg := DefaultConfig("/config")
 
 	assert.NotNil(t, cfg.SABnzbd.Enabled)
 	assert.True(t, *cfg.SABnzbd.Enabled)
 	assert.NotNil(t, cfg.Arrs.Enabled)
 	assert.True(t, *cfg.Arrs.Enabled)
+	assert.NotNil(t, cfg.Health.Enabled)
+	assert.True(t, *cfg.Health.Enabled)
+	assert.NotNil(t, cfg.Health.ResolveRepairOnImport)
+	assert.True(t, *cfg.Health.ResolveRepairOnImport)
+	assert.Equal(t, 2, cfg.Health.MaxRetries)
+	assert.NotNil(t, cfg.Health.Repair.Enabled)
+	assert.True(t, *cfg.Health.Repair.Enabled)
+	assert.Equal(t, 3, cfg.Health.Repair.MaxRepairRetries)
+	assert.NotNil(t, cfg.SegmentCache.Enabled)
+	assert.True(t, *cfg.SegmentCache.Enabled)
+	assert.Equal(t, "/config/segment-cache", cfg.SegmentCache.CachePath)
+	assert.Equal(t, 50, cfg.SegmentCache.MaxSizeGB)
+	assert.Equal(t, 168, cfg.SegmentCache.ExpiryHours)
+	assert.NotNil(t, cfg.Arrs.QueueCleanupEnabled)
+	assert.True(t, *cfg.Arrs.QueueCleanupEnabled)
+	assert.Equal(t, 300, cfg.Arrs.QueueCleanupIntervalSeconds)
 
 	assert.Len(t, cfg.SABnzbd.Categories, 5)
 	assert.Equal(t, "movies", cfg.SABnzbd.Categories[0].Name)
@@ -240,6 +256,48 @@ func TestDefaultConfig_DanishEditionSABnzbdReady(t *testing.T) {
 	assert.Equal(t, "tv", cfg.SABnzbd.Categories[1].Name)
 	assert.Equal(t, "tv", cfg.SABnzbd.Categories[1].Dir)
 	assert.Equal(t, "sonarr", cfg.SABnzbd.Categories[1].Type)
+}
+
+func TestApplyDockerEnvOverrides_DanishHealthControls(t *testing.T) {
+	t.Setenv("ALTMOUNT_ENABLE_HEALTH", "false")
+	t.Setenv("ALTMOUNT_HEALTH_RESOLVE_REPAIR_ON_IMPORT", "false")
+	t.Setenv("ALTMOUNT_HEALTH_MAX_RETRIES", "4")
+	t.Setenv("ALTMOUNT_HEALTH_MAX_REPAIR_RETRIES", "5")
+	t.Setenv("ALTMOUNT_SEGMENT_CACHE_ENABLED", "false")
+	t.Setenv("ALTMOUNT_SEGMENT_CACHE_PATH", "/tmp/segments")
+	t.Setenv("ALTMOUNT_SEGMENT_CACHE_MAX_SIZE_GB", "12")
+	t.Setenv("ALTMOUNT_SEGMENT_CACHE_EXPIRY_HOURS", "24")
+	t.Setenv("ALTMOUNT_ARRS_QUEUE_CLEANUP_ENABLED", "false")
+	t.Setenv("ALTMOUNT_ARRS_QUEUE_CLEANUP_INTERVAL_SECONDS", "120")
+
+	cfg := DefaultConfig()
+	err := applyDockerEnvOverrides(cfg)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, cfg.Health.Enabled)
+	assert.False(t, *cfg.Health.Enabled)
+	assert.NotNil(t, cfg.Health.ResolveRepairOnImport)
+	assert.False(t, *cfg.Health.ResolveRepairOnImport)
+	assert.Equal(t, 4, cfg.Health.MaxRetries)
+	assert.Equal(t, 5, cfg.Health.Repair.MaxRepairRetries)
+	assert.NotNil(t, cfg.SegmentCache.Enabled)
+	assert.False(t, *cfg.SegmentCache.Enabled)
+	assert.Equal(t, "/tmp/segments", cfg.SegmentCache.CachePath)
+	assert.Equal(t, 12, cfg.SegmentCache.MaxSizeGB)
+	assert.Equal(t, 24, cfg.SegmentCache.ExpiryHours)
+	assert.NotNil(t, cfg.Arrs.QueueCleanupEnabled)
+	assert.False(t, *cfg.Arrs.QueueCleanupEnabled)
+	assert.Equal(t, 120, cfg.Arrs.QueueCleanupIntervalSeconds)
+}
+
+func TestEnvIntRejectsInvalidValue(t *testing.T) {
+	t.Setenv("ALTMOUNT_HEALTH_MAX_RETRIES", "not-a-number")
+
+	cfg := DefaultConfig()
+	err := applyDockerEnvOverrides(cfg)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "ALTMOUNT_HEALTH_MAX_RETRIES")
 }
 
 func TestConfig_NetworkRoundTrip(t *testing.T) {

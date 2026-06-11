@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1256,10 +1257,12 @@ func isRunningInDocker() bool {
 // DefaultConfig returns a config with default values
 // If configDir is provided, it will be used for database and log file paths
 func DefaultConfig(configDir ...string) *Config {
-	healthEnabled := false            // Health system disabled by default
+	healthEnabled := true             // Danish edition keeps health repair active by default
 	cleanupOrphanedMetadata := false  // Cleanup orphaned metadata disabled by default
-	resolveRepairOnImport := false    // Disable smart replacement detection by default
+	resolveRepairOnImport := true     // Resolve stale repair records when ARR imports a replacement
 	deleteSourceNzbOnRemoval := false // Delete source NZB on removal disabled by default
+	segmentCacheEnabled := true
+	queueCleanupEnabled := true
 	vfsEnabled := false
 	mountEnabled := false // Disabled by default
 	sabnzbdEnabled := true
@@ -1278,7 +1281,7 @@ func DefaultConfig(configDir ...string) *Config {
 	repairExponentialBackoff := true
 
 	// Set paths based on whether we're running in Docker or have a specific config directory
-	var dbPath, metadataPath, logPath, rclonePath, cachePath, backupPath string
+	var dbPath, metadataPath, logPath, rclonePath, cachePath, segmentCachePath, backupPath string
 
 	// If a config directory is provided, use it
 	if len(configDir) > 0 && configDir[0] != "" {
@@ -1287,6 +1290,7 @@ func DefaultConfig(configDir ...string) *Config {
 		logPath = filepath.Join(configDir[0], "altmount.log")
 		rclonePath = configDir[0]
 		cachePath = filepath.Join(configDir[0], "cache")
+		segmentCachePath = filepath.Join(configDir[0], "segment-cache")
 		backupPath = filepath.Join(configDir[0], "backups")
 	} else if isRunningInDocker() {
 		dbPath = "/config/altmount.db"
@@ -1294,6 +1298,7 @@ func DefaultConfig(configDir ...string) *Config {
 		logPath = "/config/altmount.log"
 		rclonePath = "/config"
 		cachePath = "/config/cache"
+		segmentCachePath = "/config/segment-cache"
 		backupPath = "/config/backups"
 	} else {
 		dbPath = "./altmount.db"
@@ -1301,6 +1306,7 @@ func DefaultConfig(configDir ...string) *Config {
 		logPath = "./altmount.log"
 		rclonePath = "."
 		cachePath = "./cache"
+		segmentCachePath = "./segment-cache"
 		backupPath = "./backups"
 	}
 
@@ -1432,8 +1438,10 @@ func DefaultConfig(configDir ...string) *Config {
 				Enabled:            &repairEnabled,
 				IntervalMinutes:    60,
 				MaxCoolDownHours:   24,
+				MaxRepairRetries:   3,
 				ExponentialBackoff: &repairExponentialBackoff,
 			},
+			MaxRetries: 2,
 		},
 		SABnzbd: SABnzbdConfig{
 			Enabled:               &sabnzbdEnabled,
@@ -1491,6 +1499,8 @@ func DefaultConfig(configDir ...string) *Config {
 			ReadarrInstances:               []ArrsInstanceConfig{},
 			WhisparrInstances:              []ArrsInstanceConfig{},
 			CleanupAutomaticImportFailure:  &cleanupAutomaticImportFailure,
+			QueueCleanupEnabled:            &queueCleanupEnabled,
+			QueueCleanupIntervalSeconds:    300,
 			QueueCleanupGracePeriodMinutes: 10, // Default to 10 minutes
 			QueueCleanupAllowlist: []IgnoredMessage{
 				{Message: "No files found are eligible", Enabled: true},
@@ -1512,6 +1522,12 @@ func DefaultConfig(configDir ...string) *Config {
 			EntryTimeoutSeconds: 1,
 			MaxCacheSizeMB:      128,
 			MaxReadAheadMB:      128,
+		},
+		SegmentCache: SegmentCacheConfig{
+			Enabled:     &segmentCacheEnabled,
+			CachePath:   segmentCachePath,
+			MaxSizeGB:   50,
+			ExpiryHours: 168,
 		},
 		MountPath: "",            // Empty by default - required when ARRs is enabled
 		MountType: MountTypeNone, // No mount system active by default
@@ -1575,6 +1591,18 @@ func splitEnvList(name string) []string {
 	return values
 }
 
+func envInt(name string) (int, bool, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0, false, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, true, fmt.Errorf("invalid %s value %q: use an integer", name, raw)
+	}
+	return value, true, nil
+}
+
 func applyDockerEnvOverrides(config *Config) error {
 	if mountPath := strings.TrimSpace(os.Getenv("ALTMOUNT_MOUNT_PATH")); mountPath != "" {
 		config.MountPath = mountPath
@@ -1605,6 +1633,54 @@ func applyDockerEnvOverrides(config *Config) error {
 		return err
 	} else if ok {
 		config.Arrs.Enabled = &enabled
+	}
+	if enabled, ok, err := envBool("ALTMOUNT_ENABLE_HEALTH"); err != nil {
+		return err
+	} else if ok {
+		config.Health.Enabled = &enabled
+	}
+	if enabled, ok, err := envBool("ALTMOUNT_HEALTH_RESOLVE_REPAIR_ON_IMPORT"); err != nil {
+		return err
+	} else if ok {
+		config.Health.ResolveRepairOnImport = &enabled
+	}
+	if maxRetries, ok, err := envInt("ALTMOUNT_HEALTH_MAX_RETRIES"); err != nil {
+		return err
+	} else if ok {
+		config.Health.MaxRetries = maxRetries
+	}
+	if maxRepairRetries, ok, err := envInt("ALTMOUNT_HEALTH_MAX_REPAIR_RETRIES"); err != nil {
+		return err
+	} else if ok {
+		config.Health.Repair.MaxRepairRetries = maxRepairRetries
+	}
+	if enabled, ok, err := envBool("ALTMOUNT_SEGMENT_CACHE_ENABLED"); err != nil {
+		return err
+	} else if ok {
+		config.SegmentCache.Enabled = &enabled
+	}
+	if cachePath := strings.TrimSpace(os.Getenv("ALTMOUNT_SEGMENT_CACHE_PATH")); cachePath != "" {
+		config.SegmentCache.CachePath = cachePath
+	}
+	if maxSizeGB, ok, err := envInt("ALTMOUNT_SEGMENT_CACHE_MAX_SIZE_GB"); err != nil {
+		return err
+	} else if ok {
+		config.SegmentCache.MaxSizeGB = maxSizeGB
+	}
+	if expiryHours, ok, err := envInt("ALTMOUNT_SEGMENT_CACHE_EXPIRY_HOURS"); err != nil {
+		return err
+	} else if ok {
+		config.SegmentCache.ExpiryHours = expiryHours
+	}
+	if enabled, ok, err := envBool("ALTMOUNT_ARRS_QUEUE_CLEANUP_ENABLED"); err != nil {
+		return err
+	} else if ok {
+		config.Arrs.QueueCleanupEnabled = &enabled
+	}
+	if intervalSeconds, ok, err := envInt("ALTMOUNT_ARRS_QUEUE_CLEANUP_INTERVAL_SECONDS"); err != nil {
+		return err
+	} else if ok {
+		config.Arrs.QueueCleanupIntervalSeconds = intervalSeconds
 	}
 	if required, ok, err := envBool("ALTMOUNT_LOGIN_REQUIRED"); err != nil {
 		return err
