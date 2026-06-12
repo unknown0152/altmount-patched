@@ -167,9 +167,9 @@ health:
   cleanup_orphaned_metadata: false # Clean up orphaned files, metadata, and empty directories (when false, no cleanup occurs; when true, deletes orphaned library files, metadata files, and removes empty directories from library, import, and metadata paths, default: false)
   check_interval_seconds: 5 # Health check interval in seconds (default: 5)
   max_connections_for_health_checks: 5 # Number of NNTP connections for health checks (default: 5)
-  segment_sample_percentage: 5 # Percentage of segments to sample for health validation (1-100, default: 5)
+  segment_sample_percentage: 1 # Percentage of segments to sample for health validation (1-100, default: 1)
   acceptable_missing_segments_percentage: 0 # Percentage of missing segments allowed before a file is marked as corrupted (0-100, default: 0)
-  library_sync_interval_minutes: 360 # Library synchronization interval in minutes (default: 360 = 6 hours)
+  library_sync_interval_minutes: 1440 # Library synchronization interval in minutes (default: 1440 = 24 hours)
   library_sync_concurrency: 5 # Number of concurrent library sync operations (default: 5)
   resolve_repair_on_import: false # Automatically resolve pending repairs in the same directory when a new file is imported (default: false)
 

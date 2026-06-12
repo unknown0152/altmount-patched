@@ -1718,6 +1718,16 @@ func applyDockerEnvOverrides(config *Config) error {
 	} else if ok {
 		config.Health.MaxRetries = maxRetries
 	}
+	if samplePercentage, ok, err := envInt("ALTMOUNT_HEALTH_SEGMENT_SAMPLE_PERCENTAGE"); err != nil {
+		return err
+	} else if ok {
+		config.Health.SegmentSamplePercentage = samplePercentage
+	}
+	if intervalMinutes, ok, err := envInt("ALTMOUNT_HEALTH_LIBRARY_SYNC_INTERVAL_MINUTES"); err != nil {
+		return err
+	} else if ok {
+		config.Health.LibrarySyncIntervalMinutes = intervalMinutes
+	}
 	if maxRepairRetries, ok, err := envInt("ALTMOUNT_HEALTH_MAX_REPAIR_RETRIES"); err != nil {
 		return err
 	} else if ok {

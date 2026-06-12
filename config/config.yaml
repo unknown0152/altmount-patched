@@ -20,8 +20,8 @@ health:
     check_interval_seconds: 5
     max_connections_for_health_checks: 5
     max_concurrent_jobs: 1
-    segment_sample_percentage: 5
-    library_sync_interval_minutes: 360
+    segment_sample_percentage: 1
+    library_sync_interval_minutes: 1440
     library_sync_concurrency: 0
 rclone:
     path: /config
