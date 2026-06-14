@@ -23,6 +23,8 @@ database:
 
 # Metadata filesystem configuration
 metadata:
+  # Docker overrides: ALTMOUNT_METADATA_ROOT_PATH, ALTMOUNT_METADATA_BACKUP_ENABLED,
+  # ALTMOUNT_METADATA_BACKUP_PATH, ALTMOUNT_METADATA_BACKUP_SCHEDULE
   root_path: '/config/metadata' # Directory to store metadata files (required)
   delete_source_nzb_on_removal: false # Delete source NZB file when metadata is removed (default: false)
   delete_completed_nzb: false # Delete NZB source file after successful import (default: false, DANGEROUS: prevents re-import)
@@ -34,6 +36,9 @@ metadata:
 
 # Streaming and download configuration
 streaming:
+  # Docker overrides: ALTMOUNT_STREAMING_MAX_PREFETCH,
+  # ALTMOUNT_STREAMING_FAILURE_MASKING_ENABLED,
+  # ALTMOUNT_STREAMING_FAILURE_MASKING_THRESHOLD
   max_prefetch: 30 # Number of segments to prefetch ahead of current read position
   failure_masking:
     enabled: true # Automatically hide files from mounts after repeated failures
@@ -111,6 +116,9 @@ rclone:
 
 # Import processing configuration
 import:
+  # Docker overrides: ALTMOUNT_IMPORT_MAX_PROCESSOR_WORKERS,
+  # ALTMOUNT_IMPORT_MAX_IMPORT_CONNECTIONS, ALTMOUNT_IMPORT_MAX_DOWNLOAD_PREFETCH,
+  # ALTMOUNT_IMPORT_STRATEGY, and ALTMOUNT_IMPORT_* cleanup toggles below
   max_processor_workers: 2 # Number of NZB processor workers
   queue_processing_interval_seconds: 5 # Queue processing interval in seconds
   # Allowed file extensions for import (video, audio, and book formats)
@@ -162,6 +170,9 @@ import:
 
 # Health monitoring configuration
 health:
+  # Docker overrides: ALTMOUNT_ENABLE_HEALTH, ALTMOUNT_HEALTH_REPAIR_ENABLED,
+  # ALTMOUNT_HEALTH_RESOLVE_REPAIR_ON_IMPORT,
+  # ALTMOUNT_HEALTH_LIBRARY_SYNC_INTERVAL_MINUTES, and worker/retry settings
   enabled: false # Enable health monitoring service (default: false)
   library_dir: '' # Library directory to monitor (required when health is enabled, must be absolute path)
   cleanup_orphaned_metadata: false # Clean up orphaned files, metadata, and empty directories (when false, no cleanup occurs; when true, deletes orphaned library files, metadata files, and removes empty directories from library, import, and metadata paths, default: false)
@@ -225,6 +236,8 @@ sabnzbd:
 
 # Radarr/Sonarr/Lidarr/Readarr/Whisparr arrs configuration
 arrs:
+  # Docker overrides: ALTMOUNT_ENABLE_ARRS, ALTMOUNT_ARRS_MAX_WORKERS,
+  # ALTMOUNT_ARRS_WEBHOOK_BASE_URL, and ALTMOUNT_ARRS_QUEUE_CLEANUP_* settings
   enabled: false # Enable arrs service
   max_workers: 5 # Number of concurrent workers (default: 5)
   radarr_instances: [] # Radarr instances (configured via UI)

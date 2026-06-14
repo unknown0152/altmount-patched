@@ -1670,17 +1670,63 @@ func envInt(name string) (int, bool, error) {
 }
 
 func applyDockerEnvOverrides(config *Config) error {
+	if mountType := strings.TrimSpace(os.Getenv("ALTMOUNT_MOUNT_TYPE")); mountType != "" {
+		config.MountType = MountType(mountType)
+	}
 	if mountPath := strings.TrimSpace(os.Getenv("ALTMOUNT_MOUNT_PATH")); mountPath != "" {
 		config.MountPath = mountPath
 		if config.Fuse.MountPath == "" {
 			config.Fuse.MountPath = mountPath
 		}
 	}
+	if enabled, ok, err := envBool("ALTMOUNT_FUSE_ENABLED"); err != nil {
+		return err
+	} else if ok {
+		config.Fuse.Enabled = &enabled
+	}
 	if fuseMountPath := strings.TrimSpace(os.Getenv("ALTMOUNT_FUSE_MOUNT_PATH")); fuseMountPath != "" {
 		config.Fuse.MountPath = fuseMountPath
 	}
+	if rootPath := strings.TrimSpace(os.Getenv("ALTMOUNT_METADATA_ROOT_PATH")); rootPath != "" {
+		config.Metadata.RootPath = rootPath
+	}
+	if enabled, ok, err := envBool("ALTMOUNT_METADATA_DELETE_SOURCE_NZB_ON_REMOVAL"); err != nil {
+		return err
+	} else if ok {
+		config.Metadata.DeleteSourceNzbOnRemoval = &enabled
+	}
+	if enabled, ok, err := envBool("ALTMOUNT_METADATA_BACKUP_ENABLED"); err != nil {
+		return err
+	} else if ok {
+		config.Metadata.Backup.Enabled = &enabled
+	}
+	if backupPath := strings.TrimSpace(os.Getenv("ALTMOUNT_METADATA_BACKUP_PATH")); backupPath != "" {
+		config.Metadata.Backup.Path = backupPath
+	}
+	if schedule := strings.TrimSpace(os.Getenv("ALTMOUNT_METADATA_BACKUP_SCHEDULE")); schedule != "" {
+		config.Metadata.Backup.Schedule = schedule
+	}
+	if keepBackups, ok, err := envInt("ALTMOUNT_METADATA_BACKUP_KEEP_BACKUPS"); err != nil {
+		return err
+	} else if ok {
+		config.Metadata.Backup.KeepBackups = keepBackups
+	}
 	if completeDir := strings.TrimSpace(os.Getenv("ALTMOUNT_SABNZBD_COMPLETE_DIR")); completeDir != "" {
 		config.SABnzbd.CompleteDir = completeDir
+	}
+	if baseURL := strings.TrimSpace(os.Getenv("ALTMOUNT_SABNZBD_DOWNLOAD_CLIENT_BASE_URL")); baseURL != "" {
+		config.SABnzbd.DownloadClientBaseURL = baseURL
+	}
+	if minutes, ok, err := envInt("ALTMOUNT_SABNZBD_HISTORY_RETENTION_MINUTES"); err != nil {
+		return err
+	} else if ok {
+		config.SABnzbd.HistoryRetentionMinutes = minutes
+	}
+	if fallbackHost := strings.TrimSpace(os.Getenv("ALTMOUNT_SABNZBD_FALLBACK_HOST")); fallbackHost != "" {
+		config.SABnzbd.FallbackHost = fallbackHost
+	}
+	if fallbackKey := strings.TrimSpace(os.Getenv("ALTMOUNT_SABNZBD_FALLBACK_API_KEY")); fallbackKey != "" {
+		config.SABnzbd.FallbackAPIKey = fallbackKey
 	}
 	if categories, ok, err := envSABnzbdCategories("ALTMOUNT_SABNZBD_CATEGORIES"); err != nil {
 		return err
@@ -1715,6 +1761,26 @@ func applyDockerEnvOverrides(config *Config) error {
 	} else if ok {
 		config.Streaming.FailureMasking.Threshold = threshold
 	}
+	if maxPrefetch, ok, err := envInt("ALTMOUNT_STREAMING_MAX_PREFETCH"); err != nil {
+		return err
+	} else if ok {
+		config.Streaming.MaxPrefetch = maxPrefetch
+	}
+	if workers, ok, err := envInt("ALTMOUNT_IMPORT_MAX_PROCESSOR_WORKERS"); err != nil {
+		return err
+	} else if ok {
+		config.Import.MaxProcessorWorkers = workers
+	}
+	if intervalSeconds, ok, err := envInt("ALTMOUNT_IMPORT_QUEUE_PROCESSING_INTERVAL_SECONDS"); err != nil {
+		return err
+	} else if ok {
+		config.Import.QueueProcessingIntervalSeconds = intervalSeconds
+	}
+	if connections, ok, err := envInt("ALTMOUNT_IMPORT_MAX_IMPORT_CONNECTIONS"); err != nil {
+		return err
+	} else if ok {
+		config.Import.MaxImportConnections = connections
+	}
 	if maxImports, ok, err := envInt("ALTMOUNT_IMPORT_MAX_CONCURRENT_IMPORTS"); err != nil {
 		return err
 	} else if ok {
@@ -1727,6 +1793,25 @@ func applyDockerEnvOverrides(config *Config) error {
 	}
 	if extensions := splitEnvList("ALTMOUNT_IMPORT_ALLOWED_FILE_EXTENSIONS"); len(extensions) > 0 {
 		config.Import.AllowedFileExtensions = extensions
+	}
+	if prefetch, ok, err := envInt("ALTMOUNT_IMPORT_MAX_DOWNLOAD_PREFETCH"); err != nil {
+		return err
+	} else if ok {
+		config.Import.MaxDownloadPrefetch = prefetch
+	}
+	if strategy := strings.TrimSpace(os.Getenv("ALTMOUNT_IMPORT_STRATEGY")); strategy != "" {
+		config.Import.ImportStrategy = ImportStrategy(strategy)
+	}
+	if importDir := strings.TrimSpace(os.Getenv("ALTMOUNT_IMPORT_DIR")); importDir != "" {
+		config.Import.ImportDir = &importDir
+	}
+	if watchDir := strings.TrimSpace(os.Getenv("ALTMOUNT_IMPORT_WATCH_DIR")); watchDir != "" {
+		config.Import.WatchDir = &watchDir
+	}
+	if watchInterval, ok, err := envInt("ALTMOUNT_IMPORT_WATCH_INTERVAL_SECONDS"); err != nil {
+		return err
+	} else if ok {
+		config.Import.WatchIntervalSeconds = &watchInterval
 	}
 	if enabled, ok, err := envBool("ALTMOUNT_IMPORT_ALLOW_NESTED_RAR_EXTRACTION"); err != nil {
 		return err
@@ -1767,6 +1852,29 @@ func applyDockerEnvOverrides(config *Config) error {
 		return err
 	} else if ok {
 		config.Health.Enabled = &enabled
+	}
+	if libraryDir := strings.TrimSpace(os.Getenv("ALTMOUNT_HEALTH_LIBRARY_DIR")); libraryDir != "" {
+		config.Health.LibraryDir = &libraryDir
+	}
+	if enabled, ok, err := envBool("ALTMOUNT_HEALTH_CLEANUP_ORPHANED_METADATA"); err != nil {
+		return err
+	} else if ok {
+		config.Health.CleanupOrphanedMetadata = &enabled
+	}
+	if intervalSeconds, ok, err := envInt("ALTMOUNT_HEALTH_CHECK_INTERVAL_SECONDS"); err != nil {
+		return err
+	} else if ok {
+		config.Health.CheckIntervalSeconds = intervalSeconds
+	}
+	if jobs, ok, err := envInt("ALTMOUNT_HEALTH_MAX_CONCURRENT_JOBS"); err != nil {
+		return err
+	} else if ok {
+		config.Health.MaxConcurrentJobs = jobs
+	}
+	if enabled, ok, err := envBool("ALTMOUNT_HEALTH_REPAIR_ENABLED"); err != nil {
+		return err
+	} else if ok {
+		config.Health.Repair.Enabled = &enabled
 	}
 	if enabled, ok, err := envBool("ALTMOUNT_HEALTH_RESOLVE_REPAIR_ON_IMPORT"); err != nil {
 		return err
@@ -1816,10 +1924,28 @@ func applyDockerEnvOverrides(config *Config) error {
 	} else if ok {
 		config.Arrs.QueueCleanupEnabled = &enabled
 	}
+	if workers, ok, err := envInt("ALTMOUNT_ARRS_MAX_WORKERS"); err != nil {
+		return err
+	} else if ok {
+		config.Arrs.MaxWorkers = workers
+	}
+	if webhookBaseURL := strings.TrimSpace(os.Getenv("ALTMOUNT_ARRS_WEBHOOK_BASE_URL")); webhookBaseURL != "" {
+		config.Arrs.WebhookBaseURL = webhookBaseURL
+	}
+	if enabled, ok, err := envBool("ALTMOUNT_ARRS_CLEANUP_AUTOMATIC_IMPORT_FAILURE"); err != nil {
+		return err
+	} else if ok {
+		config.Arrs.CleanupAutomaticImportFailure = &enabled
+	}
 	if intervalSeconds, ok, err := envInt("ALTMOUNT_ARRS_QUEUE_CLEANUP_INTERVAL_SECONDS"); err != nil {
 		return err
 	} else if ok {
 		config.Arrs.QueueCleanupIntervalSeconds = intervalSeconds
+	}
+	if graceMinutes, ok, err := envInt("ALTMOUNT_ARRS_QUEUE_CLEANUP_GRACE_PERIOD_MINUTES"); err != nil {
+		return err
+	} else if ok {
+		config.Arrs.QueueCleanupGracePeriodMinutes = graceMinutes
 	}
 	if required, ok, err := envBool("ALTMOUNT_LOGIN_REQUIRED"); err != nil {
 		return err
