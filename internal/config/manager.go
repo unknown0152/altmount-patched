@@ -1602,6 +1602,61 @@ func splitEnvList(name string) []string {
 	return values
 }
 
+func envSABnzbdCategories(name string) ([]SABnzbdCategory, bool, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return nil, false, nil
+	}
+
+	entries := strings.Split(raw, ";")
+	categories := make([]SABnzbdCategory, 0, len(entries))
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+
+		fields := strings.Split(entry, "|")
+		if len(fields) != 5 {
+			return nil, true, fmt.Errorf("invalid %s category %q: expected name|order|priority|dir|type", name, entry)
+		}
+
+		categoryName := strings.TrimSpace(fields[0])
+		if categoryName == "" {
+			return nil, true, fmt.Errorf("invalid %s category %q: name is required", name, entry)
+		}
+
+		order, err := strconv.Atoi(strings.TrimSpace(fields[1]))
+		if err != nil {
+			return nil, true, fmt.Errorf("invalid %s category %q: order must be an integer", name, entry)
+		}
+
+		priority, err := strconv.Atoi(strings.TrimSpace(fields[2]))
+		if err != nil {
+			return nil, true, fmt.Errorf("invalid %s category %q: priority must be an integer", name, entry)
+		}
+
+		dir := strings.TrimSpace(fields[3])
+		if dir == "" {
+			return nil, true, fmt.Errorf("invalid %s category %q: dir is required", name, entry)
+		}
+
+		categories = append(categories, SABnzbdCategory{
+			Name:     categoryName,
+			Order:    order,
+			Priority: priority,
+			Dir:      dir,
+			Type:     strings.TrimSpace(fields[4]),
+		})
+	}
+
+	if len(categories) == 0 {
+		return nil, true, fmt.Errorf("invalid %s: no categories were provided", name)
+	}
+
+	return categories, true, nil
+}
+
 func envInt(name string) (int, bool, error) {
 	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
@@ -1626,6 +1681,11 @@ func applyDockerEnvOverrides(config *Config) error {
 	}
 	if completeDir := strings.TrimSpace(os.Getenv("ALTMOUNT_SABNZBD_COMPLETE_DIR")); completeDir != "" {
 		config.SABnzbd.CompleteDir = completeDir
+	}
+	if categories, ok, err := envSABnzbdCategories("ALTMOUNT_SABNZBD_CATEGORIES"); err != nil {
+		return err
+	} else if ok {
+		config.SABnzbd.Categories = categories
 	}
 	if key := strings.TrimSpace(os.Getenv("ALTMOUNT_API_KEY_OVERRIDE")); key != "" {
 		config.API.KeyOverride = key

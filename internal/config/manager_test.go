@@ -349,6 +349,33 @@ func TestApplyDockerEnvOverrides_DanishHealthControls(t *testing.T) {
 	assert.Equal(t, 120, cfg.Arrs.QueueCleanupIntervalSeconds)
 }
 
+func TestApplyDockerEnvOverrides_SABnzbdCategories(t *testing.T) {
+	t.Setenv(
+		"ALTMOUNT_SABNZBD_CATEGORIES",
+		"movies|1|0|movies|radarr;tv|2|0|tv|sonarr;movies-2160p|3|0|movies-2160p|radarr;tv-2160p|4|0|tv-2160p|sonarr",
+	)
+
+	cfg := DefaultConfig()
+	err := applyDockerEnvOverrides(cfg)
+
+	assert.NoError(t, err)
+	assert.Len(t, cfg.SABnzbd.Categories, 4)
+	assert.Equal(t, SABnzbdCategory{
+		Name:     "movies-2160p",
+		Order:    3,
+		Priority: 0,
+		Dir:      "movies-2160p",
+		Type:     "radarr",
+	}, cfg.SABnzbd.Categories[2])
+	assert.Equal(t, SABnzbdCategory{
+		Name:     "tv-2160p",
+		Order:    4,
+		Priority: 0,
+		Dir:      "tv-2160p",
+		Type:     "sonarr",
+	}, cfg.SABnzbd.Categories[3])
+}
+
 func TestEnvIntRejectsInvalidValue(t *testing.T) {
 	t.Setenv("ALTMOUNT_HEALTH_MAX_RETRIES", "not-a-number")
 
@@ -357,6 +384,16 @@ func TestEnvIntRejectsInvalidValue(t *testing.T) {
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "ALTMOUNT_HEALTH_MAX_RETRIES")
+}
+
+func TestEnvSABnzbdCategoriesRejectsInvalidValue(t *testing.T) {
+	t.Setenv("ALTMOUNT_SABNZBD_CATEGORIES", "movies|not-a-number|0|movies|radarr")
+
+	cfg := DefaultConfig()
+	err := applyDockerEnvOverrides(cfg)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "ALTMOUNT_SABNZBD_CATEGORIES")
 }
 
 func TestConfig_NetworkRoundTrip(t *testing.T) {

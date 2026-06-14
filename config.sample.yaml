@@ -181,6 +181,7 @@ mount_path: '' # WebDAV mount path, Example: '/mnt/remotes/altmount' or '/mnt/un
 sabnzbd:
   enabled: false # Enable SABnzbd-compatible API
   complete_dir: '/' # Base virtual directory (relative to mount point, defaults to root)
+  # Docker override: ALTMOUNT_SABNZBD_CATEGORIES='movies|1|0|movies|radarr;tv|2|0|tv|sonarr'
   categories: # Download categories
     - name: 'Default' # System default category (name cannot be changed)
       order: 0
@@ -190,20 +191,32 @@ sabnzbd:
       order: 1
       priority: 0
       dir: 'movies'
+      type: 'radarr'
     - name: 'tv'
       order: 2
       priority: 0
       dir: 'tv'
-    - name: 'music'
+      type: 'sonarr'
+    - name: 'movies-2160p'
       order: 3
+      priority: 0
+      dir: 'movies-2160p'
+      type: 'radarr'
+    - name: 'tv-2160p'
+      order: 4
+      priority: 0
+      dir: 'tv-2160p'
+      type: 'sonarr'
+    - name: 'music'
+      order: 5
       priority: 0
       dir: 'music'
     - name: 'books'
-      order: 4
+      order: 6
       priority: 0
       dir: 'books'
     - name: 'adult'
-      order: 5
+      order: 7
       priority: 0
       dir: 'adult'
   # Fallback configuration for sending failed imports to external SABnzbd
