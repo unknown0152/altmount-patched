@@ -93,7 +93,7 @@ type repairTestEnv struct {
 	hw              *HealthWorker
 }
 
-func newRepairTestEnv(t *testing.T, tempDir string, arrsErr error) *repairTestEnv {
+func newRepairTestEnv(t *testing.T, tempDir string, arrsErr error, configure ...func(*config.Config)) *repairTestEnv {
 	t.Helper()
 
 	db, err := sql.Open("sqlite3", "file::memory:?cache=shared&mode=memory")
@@ -145,6 +145,9 @@ func newRepairTestEnv(t *testing.T, tempDir string, arrsErr error) *repairTestEn
 	cfg.Health.CheckIntervalSeconds = 3600
 	cfg.Health.SegmentSamplePercentage = 10
 	cfg.Health.MaxConnectionsForHealthChecks = 1
+	for _, fn := range configure {
+		fn(cfg)
+	}
 
 	configManager := config.NewManager(cfg, "")
 
@@ -207,6 +210,17 @@ func insertFileHealth(t *testing.T, db *sql.DB, filePath, libraryPath string, re
 	require.NoError(t, err)
 }
 
+func insertRepairTriggeredFileHealth(t *testing.T, db *sql.DB, filePath, libraryPath string) {
+	t.Helper()
+	_, err := db.Exec(`
+		INSERT INTO file_health
+			(file_path, library_path, status, retry_count, max_retries,
+			 repair_retry_count, max_repair_retries, scheduled_check_at)
+		VALUES (?, ?, 'repair_triggered', 3, 3, 0, 3, datetime('now', '-1 second'))
+	`, filePath, libraryPath)
+	require.NoError(t, err)
+}
+
 // advanceScheduledCheck sets scheduled_check_at to the past so the next cycle picks it up.
 func advanceScheduledCheck(t *testing.T, db *sql.DB, filePath string) {
 	t.Helper()
@@ -260,6 +274,74 @@ func TestE2E_FileRepairTriggered_ARRResearchCalled(t *testing.T) {
 	original, readErr := env.metadataService.ReadFileMetadata(filePath)
 	assert.Nil(t, original, "metadata should not be readable at original path after move")
 	assert.NoError(t, readErr, "ReadFileMetadata should return (nil, nil) for missing file")
+}
+
+// TestE2E_FileRepairDisabled_MarksCorruptedWithoutARR verifies that disabling
+// automatic repair prevents ARR delete/blocklist/search side effects after retries exhaust.
+func TestE2E_FileRepairDisabled_MarksCorruptedWithoutARR(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks not supported on Windows")
+	}
+	tempDir := t.TempDir()
+	repairEnabled := false
+	env := newRepairTestEnv(t, tempDir, nil, func(cfg *config.Config) {
+		cfg.Health.Repair.Enabled = &repairEnabled
+	})
+
+	ctx := context.Background()
+	filePath := "series/show.s01e01.mkv"
+	libraryPath := "/media/library/show.s01e01.mkv"
+	maxRetries := 3
+
+	meta := validSegmentMeta(env.metadataService, 1024)
+	require.NoError(t, env.metadataService.WriteFileMetadata(filePath, meta))
+	insertFileHealth(t, env.db, filePath, libraryPath, maxRetries-1, maxRetries)
+
+	require.NoError(t, env.hw.runHealthCheckCycle(ctx))
+
+	env.mockARRs.mu.Lock()
+	calls := append([]triggerCall(nil), env.mockARRs.calls...)
+	env.mockARRs.mu.Unlock()
+	assert.Empty(t, calls, "ARR repair must not be triggered when automatic repair is disabled")
+
+	fh, err := env.healthRepo.GetFileHealth(ctx, filePath)
+	require.NoError(t, err)
+	require.NotNil(t, fh)
+	assert.Equal(t, database.HealthStatusCorrupted, fh.Status)
+
+	original, readErr := env.metadataService.ReadFileMetadata(filePath)
+	assert.NotNil(t, original, "metadata should stay in place when repair is disabled")
+	assert.NoError(t, readErr)
+}
+
+// TestE2E_FileRepairDisabled_StopsExistingRepairRetries verifies that disabling
+// automatic repair also stops records already in repair_triggered from calling ARR again.
+func TestE2E_FileRepairDisabled_StopsExistingRepairRetries(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks not supported on Windows")
+	}
+	tempDir := t.TempDir()
+	repairEnabled := false
+	env := newRepairTestEnv(t, tempDir, nil, func(cfg *config.Config) {
+		cfg.Health.Repair.Enabled = &repairEnabled
+	})
+
+	ctx := context.Background()
+	filePath := "series/show.s01e02.mkv"
+	libraryPath := "/media/library/show.s01e02.mkv"
+	insertRepairTriggeredFileHealth(t, env.db, filePath, libraryPath)
+
+	require.NoError(t, env.hw.runHealthCheckCycle(ctx))
+
+	env.mockARRs.mu.Lock()
+	calls := append([]triggerCall(nil), env.mockARRs.calls...)
+	env.mockARRs.mu.Unlock()
+	assert.Empty(t, calls, "ARR repair retry must not be triggered when automatic repair is disabled")
+
+	fh, err := env.healthRepo.GetFileHealth(ctx, filePath)
+	require.NoError(t, err)
+	require.NotNil(t, fh)
+	assert.Equal(t, database.HealthStatusCorrupted, fh.Status)
 }
 
 // TestE2E_FileRepairTriggered_FullRetryFlow verifies that a file starting at retry_count=0

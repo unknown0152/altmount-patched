@@ -19,8 +19,8 @@ import (
 	"github.com/javi11/altmount/internal/importer"
 	"github.com/javi11/altmount/internal/metadata"
 	metapb "github.com/javi11/altmount/internal/metadata/proto"
-	"github.com/javi11/altmount/internal/utils"
 	"github.com/javi11/altmount/internal/progress"
+	"github.com/javi11/altmount/internal/utils"
 	"github.com/sourcegraph/conc/pool"
 )
 
@@ -469,6 +469,18 @@ func (hw *HealthWorker) prepareUpdateForResult(ctx context.Context, fh *database
 
 	switch fh.Status {
 	case database.HealthStatusRepairTriggered:
+		if !hw.configGetter().GetRepairEnabled() {
+			update.Type = database.UpdateTypeCorrupted
+			update.Status = database.HealthStatusCorrupted
+			sideEffect = func() error {
+				slog.WarnContext(ctx, "Automatic repair disabled; marking file corrupted without re-triggering ARR repair",
+					"file_path", fh.FilePath,
+					"repair_retry_count", fh.RepairRetryCount)
+				return nil
+			}
+			break
+		}
+
 		if fh.RepairRetryCount >= hw.configGetter().GetMaxRepairRetries() {
 			update.Type = database.UpdateTypeCorrupted
 			update.Status = database.HealthStatusCorrupted
@@ -509,16 +521,27 @@ func (hw *HealthWorker) prepareUpdateForResult(ctx context.Context, fh *database
 	default:
 		// Regular health check phase
 		if fh.RetryCount >= hw.configGetter().GetMaxRetries()-1 {
-			update.Type = database.UpdateTypeRepairTrigger
-			update.Status = database.HealthStatusRepairTriggered
+			if !hw.configGetter().GetRepairEnabled() {
+				update.Type = database.UpdateTypeCorrupted
+				update.Status = database.HealthStatusCorrupted
 
-			update.ScheduledCheckAt = time.Now().UTC().Add(hw.configGetter().GetRepairInterval())
+				sideEffect = func() error {
+					slog.WarnContext(ctx, "Health check retries exhausted; automatic repair disabled",
+						"file_path", fh.FilePath)
+					return nil
+				}
+			} else {
+				update.Type = database.UpdateTypeRepairTrigger
+				update.Status = database.HealthStatusRepairTriggered
 
-			sideEffect = func() error {
-				slog.InfoContext(ctx, "Health check retries exhausted, triggering repair", "file_path", fh.FilePath)
-				outcome, err := hw.triggerFileRepair(ctx, fh, errorMsg, event.Details)
-				applyRepairOutcome(update, outcome, err)
-				return nil
+				update.ScheduledCheckAt = time.Now().UTC().Add(hw.configGetter().GetRepairInterval())
+
+				sideEffect = func() error {
+					slog.InfoContext(ctx, "Health check retries exhausted, triggering repair", "file_path", fh.FilePath)
+					outcome, err := hw.triggerFileRepair(ctx, fh, errorMsg, event.Details)
+					applyRepairOutcome(update, outcome, err)
+					return nil
+				}
 			}
 		} else {
 			// Increment health check retry count
@@ -548,6 +571,18 @@ func (hw *HealthWorker) prepareUpdateForResult(ctx context.Context, fh *database
 func (hw *HealthWorker) prepareRepairNotificationUpdate(ctx context.Context, fh *database.FileHealth) (*database.HealthStatusUpdate, func() error) {
 	update := &database.HealthStatusUpdate{
 		FilePath: fh.FilePath,
+	}
+
+	if !hw.configGetter().GetRepairEnabled() {
+		update.Type = database.UpdateTypeCorrupted
+		update.Status = database.HealthStatusCorrupted
+		sideEffect := func() error {
+			slog.WarnContext(ctx, "Automatic repair disabled; marking file corrupted without re-triggering ARR repair",
+				"file_path", fh.FilePath,
+				"repair_retry_count", fh.RepairRetryCount)
+			return nil
+		}
+		return update, sideEffect
 	}
 
 	if fh.RepairRetryCount >= hw.configGetter().GetMaxRepairRetries() {
