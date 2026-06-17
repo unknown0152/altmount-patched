@@ -1741,6 +1741,11 @@ func applyDockerEnvOverrides(config *Config) error {
 	if origins := splitEnvList("ALTMOUNT_API_ALLOWED_ORIGINS"); len(origins) > 0 {
 		config.API.AllowedOrigins = origins
 	}
+	if enabled, ok, err := envBool("ALTMOUNT_AUTH_LOGIN_REQUIRED"); err != nil {
+		return err
+	} else if ok {
+		config.Auth.LoginRequired = &enabled
+	}
 	if enabled, ok, err := envBool("ALTMOUNT_ENABLE_SABNZBD"); err != nil {
 		return err
 	} else if ok {
