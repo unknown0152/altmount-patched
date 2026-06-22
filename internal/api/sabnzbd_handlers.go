@@ -1502,11 +1502,19 @@ func (s *Server) calculateHistoryStoragePath(item *database.ImportQueueItem, bas
 	fullStoragePath = filepath.ToSlash(filepath.Clean(fullStoragePath))
 
 	if _, err := os.Stat(fullStoragePath); os.IsNotExist(err) {
-		slog.WarnContext(context.Background(), "sabnzbd history: reported path does not exist on disk",
-			"item_id", item.ID,
-			"storage_path", *item.StoragePath,
-			"reported_path", fullStoragePath,
-		)
+		if item.Status == database.QueueStatusCompleted {
+			slog.DebugContext(context.Background(), "sabnzbd history: completed import path no longer exists",
+				"item_id", item.ID,
+				"storage_path", *item.StoragePath,
+				"reported_path", fullStoragePath,
+			)
+		} else {
+			slog.WarnContext(context.Background(), "sabnzbd history: reported path does not exist on disk",
+				"item_id", item.ID,
+				"storage_path", *item.StoragePath,
+				"reported_path", fullStoragePath,
+			)
+		}
 	}
 
 	// Return the full file path for SYMLINK/STRM to help Arrs find it immediately.
